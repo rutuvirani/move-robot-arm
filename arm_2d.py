@@ -2,118 +2,128 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button
 
-L = 1
-L2 = 1
-angles = [0,45,90]
-first_link_initial_angle = 30
-second_link_initial_angle = 45
+# 1. SETTINGS AND CURRENT STATE
 
-tip_x_history = []
-tip_y_history = []
+link1_length = 1.0
+link2_length = 1.0
+
+link1_initial_angle_deg = 30.0
+link2_initial_angle_deg = 45.0
 
 target_x = 1.0
 target_y = 0.5
 
-elbow_direction = 1
+link2_bend_sign = 1 # decides whether the elbow bends up (1) or down (-1)
 
-def link_tip_position(L,theta):
-    x = (L * np.cos(np.deg2rad(theta)))
-    y = (L * np.sin(np.deg2rad(theta)))
-    return x,y
+tip_x_history = []
+tip_y_history = []
 
-def ee_position(L1, L2, theta1, theta2):
-    x1, y1 = link_tip_position(L1, theta1)
+# CALCULATIONS
 
-    x2, y2 = link_tip_position(L2, theta1 + theta2)
+def link_displacement(length, angle_deg):
+    """Return a link's horizontal and vertical displacement."""
+    angle_rad = np.deg2rad(angle_deg)
 
-    x_ee = x1 + x2
-    y_ee = y1 + y2
+    dx = length * np.cos(angle_rad) # dx = l * cos(theta)
+    dy = length * np.sin(angle_rad) # dy = l * sin(theta)
 
-    return x1, y1, x_ee, y_ee
+    return dx, dy
 
-x1, y1, x_ee, y_ee = ee_position(
-    L, L2, first_link_initial_angle, second_link_initial_angle
-)
-
-
-# Using pythagorian equation
-
-cos_theta2 = (
-    target_x ** 2 + target_y ** 2 - L ** 2 - L2 ** 2
-) / (2 * L * L2)
-print("Cosine of second link angle:", cos_theta2)
-
-if -1 <= cos_theta2 <= 1:
-    theta2_rad = np.arccos(cos_theta2)
-    theta2_deg = np.rad2deg(theta2_rad)
-    print("Calculated second link angle:", theta2_deg)
-
-    target_direction = np.arctan2(target_y, target_x)
-    offset = np.arctan2(
-        L2 * np.sin(theta2_rad),
-        L + L2 * np.cos(theta2_rad)
+def forward_kinematics(
+    link1_length, link2_length, link1_angle_deg, link2_angle_deg
+):
+    """Calculate both link tips from the joint angles."""
+    link1_tip_x, link1_tip_y = link_displacement(
+        link1_length, link1_angle_deg
     )
 
-    theta1_rad = target_direction - offset
-    theta1_deg = np.rad2deg(theta1_rad)
-    print("Calculated shoulder angle:", theta1_deg)
-
-else:
-    print("Target is outside the arm's reach.")
-
-if -1 <= cos_theta2 <= 1:
-    _, _, check_x, check_y = ee_position(
-        L, L2, theta1_deg, theta2_deg
+    link2_dx, link2_dy = link_displacement(
+        link2_length, link1_angle_deg + link2_angle_deg  # the second link's angle is relative to the first link's angle
     )
 
-    print("Calculated tip:", check_x, check_y)
-    print("Target:", target_x, target_y)
+    link2_tip_x = link1_tip_x + link2_dx
+    link2_tip_y = link1_tip_y + link2_dy
 
-fig, ax = plt.subplots()
-fig.subplots_adjust(bottom=0.30)
+    return link1_tip_x, link1_tip_y, link2_tip_x, link2_tip_y
 
-def update(value):
-    first_link_angle = first_link_slider.val
-    second_link_angle = second_link_slider.val
+def inverse_kinematics(
+    link1_length, link2_length, target_x, target_y, link2_bend_sign
+):
+    """Return joint angles in degrees, or None if unreachable."""
+    cos_link2_angle = (
+        target_x ** 2
+        + target_y ** 2
+        - link1_length ** 2
+        - link2_length ** 2
+    ) / (2 * link1_length * link2_length) # cos(theta2) = (x^2 + y^2 - l1^2 - l2^2) / (2 * l1 * l2) paythagorean theorem
 
-    x1, y1, x_ee, y_ee = ee_position(
-        L, L2, first_link_angle, second_link_angle
+
+    # Allow tiny floating-point errors at the workspace boundary.
+    tolerance = 1e-10
+
+    if cos_link2_angle < -1 - tolerance:
+        return None
+
+    if cos_link2_angle > 1 + tolerance:
+        return None
+
+    cos_link2_angle = np.clip(cos_link2_angle, -1.0, 1.0)
+
+    # At the base with equal lengths, choose one valid folded pose.
+    if target_x == 0 and target_y == 0 and link1_length == link2_length:
+        return 0.0, link2_bend_sign * 180.0
+    
+    link2_angle_rad = (link2_bend_sign * np.arccos(cos_link2_angle)) # theta2 = sign * arccos(cos(theta2))
+
+    # theta1 = atan2(y, x) - atan2(l2 * sin(theta2), l1 + l2 * cos(theta2))
+    target_direction_rad = np.arctan2(target_y, target_x)
+    offset_rad = np.arctan2(
+        link2_length * np.sin(link2_angle_rad),
+        link1_length + link2_length * np.cos(link2_angle_rad)
+    )
+    link1_angle_rad = target_direction_rad - offset_rad
+
+    link1_angle_deg = np.rad2deg(link1_angle_rad)
+    link2_angle_deg = np.rad2deg(link2_angle_rad)
+
+    # Represent the link 1 angle within the slider's range.
+    link1_angle_deg = (link1_angle_deg + 180) % 360 - 180
+
+    return link1_angle_deg, link2_angle_deg
+
+# EVENT CALLBACK FUNCTIONS
+
+def update_plot(value=None, record_trail=True):
+    link1_angle_deg = link1_slider.val
+    link2_angle_deg = link2_slider.val
+
+    link1_tip_x, link1_tip_y, link2_tip_x, link2_tip_y = (
+        forward_kinematics(
+            link1_length,
+            link2_length,
+            link1_angle_deg,
+            link2_angle_deg
+        )
     )
 
-    error_x = target_x - x_ee
-    error_y = target_y - y_ee
+    arm.set_data(
+        [0, link1_tip_x, link2_tip_x],
+        [0, link1_tip_y, link2_tip_y]
+    )
 
-    distance = np.sqrt(error_x ** 2 + error_y ** 2)
-
-    arm.set_data([0, x1, x_ee], [0, y1, y_ee])
-    tip_x_history.append(x_ee)
-    tip_y_history.append(y_ee)
+    if record_trail:
+        tip_x_history.append(link2_tip_x)
+        tip_y_history.append(link2_tip_y)
 
     trail.set_data(tip_x_history, tip_y_history)
+
+    error_x = target_x - link2_tip_x
+    error_y = target_y - link2_tip_y
+    distance = np.sqrt(error_x ** 2 + error_y ** 2)
 
     ax.set_title(f"Distance to target: {distance:.3f} m")
     fig.canvas.draw_idle()
 
-slider_area = fig.add_axes([0.25, 0.15, 0.60, 0.03])
-first_link_slider = Slider(
-    ax=slider_area,
-    label="Link_1 angle (°)",
-    valmin=-180,
-    valmax=180,
-    valinit=first_link_initial_angle)
-
-second_slider_area = fig.add_axes([0.25, 0.07, 0.60, 0.03])
-
-second_link_slider = Slider(
-    ax=second_slider_area,
-    label="Link_2 angle (°)",
-    valmin=-180,
-    valmax=180,
-    valinit=second_link_initial_angle
-)
-
-clear_area = fig.add_axes([0.78, 0.01, 0.18, 0.04])
-clear_button = Button(clear_area, "Clear trail")
 
 def clear_trail(event):
     tip_x_history.clear()
@@ -122,47 +132,42 @@ def clear_trail(event):
     trail.set_data([], [])
     fig.canvas.draw_idle()
 
-clear_button.on_clicked(clear_trail)
-
-reach_area = fig.add_axes([0.25, 0.01, 0.25, 0.04])
-reach_button = Button(reach_area, "Reach target")
 
 def reach_target(event):
-    cos_theta2 = (
-        target_x ** 2 + target_y ** 2 - L ** 2 - L2 ** 2
-    ) / (2 * L * L2)
-
-    if not -1 <= cos_theta2 <= 1:
-        print("Target is outside the arm's reach.")
-        return
-
-    theta2_rad = elbow_direction*np.arccos(cos_theta2)
-
-    theta1_rad = np.arctan2(target_y, target_x) - np.arctan2(
-        L2 * np.sin(theta2_rad),
-        L + L2 * np.cos(theta2_rad)
+    solution = inverse_kinematics(
+        link1_length,
+        link2_length,
+        target_x,
+        target_y,
+        link2_bend_sign
     )
 
-    theta1_deg = np.rad2deg(theta1_rad)
-    theta1_deg = (theta1_deg + 180) % 360 - 180
+    if solution is None:
+        ax.set_title("Target is outside the arm's reach.")
+        fig.canvas.draw_idle()
+        return
 
-    first_link_slider.set_val(theta1_deg)
-    second_link_slider.set_val(np.rad2deg(theta2_rad))
+    link1_angle_deg, link2_angle_deg = solution
 
-reach_button.on_clicked(reach_target)
+    # Set both angles before updating the arm.
+    # This avoids recording an intermediate slider configuration.
+    link1_slider.eventson = False
+    link2_slider.eventson = False
 
-flip_area = fig.add_axes([0.53, 0.01, 0.22, 0.04])
-flip_button = Button(flip_area, "Flip elbow")
+    link1_slider.set_val(link1_angle_deg)
+    link2_slider.set_val(link2_angle_deg)
 
+    link1_slider.eventson = True
+    link2_slider.eventson = True
 
-def flip_elbow(event):
-    global elbow_direction
+    update_plot()
 
-    elbow_direction = -elbow_direction
+def flip_link2(event):
+    global link2_bend_sign
+
+    link2_bend_sign = -link2_bend_sign
     reach_target(event)
 
-
-flip_button.on_clicked(flip_elbow)
 
 def choose_target(event):
     global target_x, target_y
@@ -174,25 +179,85 @@ def choose_target(event):
     target_y = event.ydata
 
     target_marker.set_data([target_x], [target_y])
-    update(None)
 
+    # Choosing a target does not move the arm.
+    update_plot(record_trail=False)
 
-fig.canvas.mpl_connect("button_press_event", choose_target)
+#   THE FIGURE AND PLOTTED OBJECTS
 
-arm, = ax.plot([0, x1,x_ee], [0, y1, y_ee], "o-", linewidth=4, markersize=10)
-trail, = ax.plot([], [], "--", color="orange", linewidth=1)
-target_marker, = ax.plot(target_x, target_y, "rx", markersize=12, markeredgewidth=3)
+fig, ax = plt.subplots()
+fig.subplots_adjust(bottom=0.30)
 
-reach = L + L2
-ax.set_xlim(-reach - 0.2, reach + 0.2)
-ax.set_ylim(-reach - 0.2, reach + 0.2)
+arm, = ax.plot(
+    [], [], "o-",
+    linewidth=4,
+    markersize=10
+)
+
+trail, = ax.plot(
+    [], [], "--",
+    color="orange",
+    linewidth=1
+)
+
+target_marker, = ax.plot(
+    target_x, target_y, "rx",
+    markersize=12,
+    markeredgewidth=3
+)
+
+maximum_reach = link1_length + link2_length
+
+ax.set_xlim(-maximum_reach - 0.2, maximum_reach + 0.2)
+ax.set_ylim(-maximum_reach - 0.2, maximum_reach + 0.2)
 ax.set_aspect("equal")
 ax.grid(True)
 ax.set_xlabel("x (m)")
 ax.set_ylabel("y (m)")
 
-first_link_slider.on_changed(update)
-second_link_slider.on_changed(update)
+# SLIDERS AND BUTTONS
 
-update(None)
+link1_slider_area = fig.add_axes([0.25, 0.15, 0.60, 0.03])
+link2_slider_area = fig.add_axes([0.25, 0.07, 0.60, 0.03])
+
+link1_slider = Slider(
+    ax=link1_slider_area,
+    label="Link 1 angle (°)",
+    valmin=-180,
+    valmax=180,
+    valinit=link1_initial_angle_deg
+)
+
+link2_slider = Slider(
+    ax=link2_slider_area,
+    label="Link 2 angle (°)",
+    valmin=-180,
+    valmax=180,
+    valinit=link2_initial_angle_deg
+)
+
+reach_area = fig.add_axes([0.25, 0.01, 0.25, 0.04])
+flip_area = fig.add_axes([0.53, 0.01, 0.22, 0.04])
+clear_area = fig.add_axes([0.78, 0.01, 0.18, 0.04])
+
+reach_button = Button(reach_area, "Reach target")
+flip_button = Button(flip_area, "Flip link 2")
+clear_button = Button(clear_area, "Clear trail")
+
+
+# CONNECT EVENTS
+
+link1_slider.on_changed(update_plot)
+link2_slider.on_changed(update_plot)
+
+reach_button.on_clicked(reach_target)
+flip_button.on_clicked(flip_link2)
+clear_button.on_clicked(clear_trail)
+
+fig.canvas.mpl_connect("button_press_event", choose_target)
+
+
+# DRAW THE INITIAL STATE AND SHOW PLOT
+
+update_plot()
 plt.show()
