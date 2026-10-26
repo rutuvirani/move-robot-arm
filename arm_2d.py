@@ -18,6 +18,8 @@ link2_bend_sign = 1 # decides whether the elbow bends up (1) or down (-1)
 tip_x_history = []
 tip_y_history = []
 
+motion_timer = None
+
 # CALCULATIONS
 
 def link_displacement(length, angle_deg):
@@ -91,6 +93,14 @@ def inverse_kinematics(
 
     return link1_angle_deg, link2_angle_deg
 
+def interpolate_angle(start_angle_deg, end_angle_deg, progress):
+    angle_deg = (
+        start_angle_deg
+        + progress * (end_angle_deg - start_angle_deg)
+    )
+
+    return angle_deg
+
 # EVENT CALLBACK FUNCTIONS
 
 def update_plot(value=None, record_trail=True):
@@ -132,8 +142,26 @@ def clear_trail(event):
     trail.set_data([], [])
     fig.canvas.draw_idle()
 
+def set_joint_angles(link1_angle_deg, link2_angle_deg):
+    link1_slider.eventson = False
+    link2_slider.eventson = False
+
+    link1_slider.set_val(link1_angle_deg)
+    link2_slider.set_val(link2_angle_deg)
+
+    link1_slider.eventson = True
+    link2_slider.eventson = True
+
+    update_plot()
 
 def reach_target(event):
+    global motion_timer
+
+    # stop any previous movement
+    if motion_timer is not None:
+        motion_timer.stop()
+        motion_timer = None
+        
     solution = inverse_kinematics(
         link1_length,
         link2_length,
@@ -147,18 +175,29 @@ def reach_target(event):
         fig.canvas.draw_idle()
         return
 
-    link1_angle_deg, link2_angle_deg = solution
+    link1_end_deg, link2_end_deg = solution
 
     # Set both angles before updating the arm.
-    # This avoids recording an intermediate slider configuration.
-    link1_slider.eventson = False
-    link2_slider.eventson = False
+    link1_start_deg = link1_slider.val
+    link2_start_deg = link2_slider.val
 
-    link1_slider.set_val(link1_angle_deg)
-    link2_slider.set_val(link2_angle_deg)
+    progress_steps = iter(np.linspace(0, 1, 61))
 
-    link1_slider.eventson = True
-    link2_slider.eventson = True
+    def animate_step():
+        progress = next(progress_steps, None)
+
+        if progress is None:
+            motion_timer.stop()
+            return
+        
+        link1_angle_deg = interpolate_angle(link1_start_deg,link1_end_deg, progress)
+        link2_angle_deg = interpolate_angle(link2_start_deg,link2_end_deg, progress)
+
+        set_joint_angles(link1_angle_deg, link2_angle_deg)
+    
+    motion_timer = fig.canvas.new_timer(interval=30)
+    motion_timer.add_callback(animate_step)
+    motion_timer.start()
 
     update_plot()
 
@@ -222,7 +261,7 @@ link2_slider_area = fig.add_axes([0.25, 0.07, 0.60, 0.03])
 
 link1_slider = Slider(
     ax=link1_slider_area,
-    label="Link 1 angle (°)",
+    label="Link 1 angle",
     valmin=-180,
     valmax=180,
     valinit=link1_initial_angle_deg
@@ -230,7 +269,7 @@ link1_slider = Slider(
 
 link2_slider = Slider(
     ax=link2_slider_area,
-    label="Link 2 angle (°)",
+    label="Link 2 angle",
     valmin=-180,
     valmax=180,
     valinit=link2_initial_angle_deg
