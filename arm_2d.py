@@ -20,7 +20,7 @@ tip_x_history = []
 tip_y_history = []
 
 motion_timer = None
-movement_duration_s = 10.0
+movement_duration_s = 6.0
 
 # CALCULATIONS
 
@@ -102,6 +102,9 @@ def interpolate_angle(start_angle_deg, end_angle_deg, progress):
     )
 
     return angle_deg
+
+def smooth_progress(progress): # we use a cubic polynomial to smooth the progress of the movement, so that it starts and ends slowly
+    return 3 * progress ** 2 - 2 * progress ** 3 # 3s^2 - 2s^3
 
 # EVENT CALLBACK FUNCTIONS
 
@@ -194,10 +197,11 @@ def reach_target(event):
         #     return
 
         elapsed_time = perf_counter() - start_time
-        progress = min(elapsed_time / movement_duration_s, 1.0)
+        progress = min(elapsed_time / movement_duration_s, 1.0) # linear progress from 0 to 1 over the duration of the movement
+        smoothed_progress = smooth_progress(progress)
         
-        link1_angle_deg = interpolate_angle(link1_start_deg,link1_end_deg, progress)
-        link2_angle_deg = interpolate_angle(link2_start_deg,link2_end_deg, progress)
+        link1_angle_deg = interpolate_angle(link1_start_deg,link1_end_deg, smoothed_progress)
+        link2_angle_deg = interpolate_angle(link2_start_deg,link2_end_deg, smoothed_progress)
 
         set_joint_angles(link1_angle_deg, link2_angle_deg)
         if progress >= 1.0:
