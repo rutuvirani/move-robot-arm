@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button
+from time import perf_counter
 
 # 1. SETTINGS AND CURRENT STATE
 
@@ -19,6 +20,7 @@ tip_x_history = []
 tip_y_history = []
 
 motion_timer = None
+movement_duration_s = 10.0
 
 # CALCULATIONS
 
@@ -181,20 +183,26 @@ def reach_target(event):
     link1_start_deg = link1_slider.val
     link2_start_deg = link2_slider.val
 
-    progress_steps = iter(np.linspace(0, 1, 61))
+    # progress_steps = iter(np.linspace(0, 1, 61)) # uncomment in case we want to use a fixed number of steps instead of time-based animation
+    start_time = perf_counter()
 
     def animate_step():
-        progress = next(progress_steps, None)
+        # uncomment in case we want to use a fixed number of steps instead of time-based animation
+        # progress = next(progress_steps, None) 
+        # if progress is None: 
+        #     motion_timer.stop()
+        #     return
 
-        if progress is None:
-            motion_timer.stop()
-            return
+        elapsed_time = perf_counter() - start_time
+        progress = min(elapsed_time / movement_duration_s, 1.0)
         
         link1_angle_deg = interpolate_angle(link1_start_deg,link1_end_deg, progress)
         link2_angle_deg = interpolate_angle(link2_start_deg,link2_end_deg, progress)
 
         set_joint_angles(link1_angle_deg, link2_angle_deg)
-    
+        if progress >= 1.0:
+            motion_timer.stop()
+
     motion_timer = fig.canvas.new_timer(interval=30)
     motion_timer.add_callback(animate_step)
     motion_timer.start()
