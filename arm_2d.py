@@ -23,6 +23,13 @@ motion_timer = None
 movement_duration_s = 6.0
 
 # CALCULATIONS
+def straight_line_points(start_x, start_y, end_x, end_y, count=61):
+    progress = np.linspace(0, 1, count)
+
+    path_x = start_x + progress * (end_x - start_x)
+    path_y = start_y + progress * (end_y - start_y)
+
+    return path_x, path_y
 
 def link_displacement(length, angle_deg):
     """Return a link's horizontal and vertical displacement."""
@@ -186,6 +193,21 @@ def reach_target(event):
     link1_start_deg = link1_slider.val
     link2_start_deg = link2_slider.val
 
+    _, _, start_x, start_y = forward_kinematics(
+    link1_length,
+    link2_length,
+    link1_start_deg,
+    link2_start_deg
+    )
+
+    path_x, path_y = straight_line_points( start_x, start_y, target_x, target_y )
+
+    planned_path.set_data(path_x, path_y)
+
+    end_x = target_x
+    end_y = target_y
+    movement_bend_sign = link2_bend_sign
+
     # progress_steps = iter(np.linspace(0, 1, 61)) # uncomment in case we want to use a fixed number of steps instead of time-based animation
     start_time = perf_counter()
 
@@ -200,8 +222,27 @@ def reach_target(event):
         progress = min(elapsed_time / movement_duration_s, 1.0) # linear progress from 0 to 1 over the duration of the movement
         smoothed_progress = smooth_progress(progress)
         
-        link1_angle_deg = interpolate_angle(link1_start_deg,link1_end_deg, smoothed_progress)
-        link2_angle_deg = interpolate_angle(link2_start_deg,link2_end_deg, smoothed_progress)
+        # link1_angle_deg = interpolate_angle(link1_start_deg,link1_end_deg, smoothed_progress)
+        # link2_angle_deg = interpolate_angle(link2_start_deg,link2_end_deg, smoothed_progress)
+
+        current_x = start_x + smoothed_progress * (end_x - start_x)
+        current_y = start_y + smoothed_progress * (end_y - start_y)
+
+        current_solution = inverse_kinematics(
+            link1_length,
+            link2_length,
+            current_x,
+            current_y,
+            movement_bend_sign
+        )
+
+        if current_solution is None:
+            motion_timer.stop()
+            ax.set_title("Movement stopped: path contains an unreachable point.")
+            fig.canvas.draw_idle()
+            return
+
+        link1_angle_deg, link2_angle_deg = current_solution
 
         set_joint_angles(link1_angle_deg, link2_angle_deg)
         if progress >= 1.0:
@@ -250,6 +291,8 @@ trail, = ax.plot(
     color="orange",
     linewidth=1
 )
+
+planned_path, = ax.plot( [], [], ":", color="green", linewidth=2 )
 
 target_marker, = ax.plot(
     target_x, target_y, "rx",
