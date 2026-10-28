@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button
 from time import perf_counter
+from matplotlib.patches import Circle
 
 # 1. SETTINGS AND CURRENT STATE
 
@@ -21,6 +22,11 @@ tip_y_history = []
 
 motion_timer = None
 movement_duration_s = 6.0
+
+obstacles = [
+    {"center_x": 0.8, "center_y": 0.7, "radius": 0.2},
+    {"center_x": -0.6, "center_y": 0.9, "radius": 0.15}
+]
 
 # CALCULATIONS
 def straight_line_points(start_x, start_y, end_x, end_y, count=61):
@@ -113,6 +119,116 @@ def interpolate_angle(start_angle_deg, end_angle_deg, progress):
 def smooth_progress(progress): # we use a cubic polynomial to smooth the progress of the movement, so that it starts and ends slowly
     return 3 * progress ** 2 - 2 * progress ** 3 # 3s^2 - 2s^3
 
+def segment_hits_circle(
+    start_x, start_y, end_x, end_y, obstacle, clearance=0.06
+):
+    # Direction of the robot link from the start point to the end point.
+    dx = end_x - start_x
+    dy = end_y - start_y
+
+    # Direction from the start of the link to the center of the obstacle.
+    center_dx = obstacle["center_x"] - start_x
+    center_dy = obstacle["center_y"] - start_y
+
+    # Length of the link squared.We use squared length because it is enough for the projection calculation.
+    length_squared = dx ** 2 + dy ** 2
+
+    # Special case: if start and end are the same point, the link has zero length.
+    if length_squared == 0:
+        closest_x = start_x
+        closest_y = start_y
+
+    else:
+        # Find where the obstacle center projects onto the link.
+        # fraction = 0   -> start of the link, fraction = 0.5 -> middle of the link, fraction = 1   -> end of the link
+        fraction = (
+            center_dx * dx + center_dy * dy
+        ) / length_squared
+
+        # The mathematical projection can fall outside the actual link.
+        fraction = np.clip(fraction, 0.0, 1.0)
+
+        # Calculate the closest point on the link to the obstacle center.
+        closest_x = start_x + fraction * dx
+        closest_y = start_y + fraction * dy
+
+    # Calculate the distance between: # obstacle center <-> closest point on the robot link
+    distance = np.sqrt(
+        (obstacle["center_x"] - closest_x) ** 2
+        + (obstacle["center_y"] - closest_y) ** 2
+    )
+
+    # Collision happens when the distance is smaller than the obstacle radius plus a small safety clearance. 
+    return distance <= obstacle["radius"] + clearance
+
+def arm_hits_obstacles(
+    link1_tip_x, link1_tip_y,
+    link2_tip_x, link2_tip_y,
+    obstacles
+):
+    for obstacle in obstacles:
+        link1_collision = segment_hits_circle(
+            0, 0,
+            link1_tip_x, link1_tip_y,
+            obstacle
+        )
+
+        link2_collision = segment_hits_circle(
+            link1_tip_x, link1_tip_y,
+            link2_tip_x, link2_tip_y,
+            obstacle
+        )
+
+        if link1_collision or link2_collision:
+            return True
+
+    return False
+
+def is_near_singularity(link2_angle_deg, margin_deg=5.0):
+    angle_rad = np.deg2rad(link2_angle_deg)
+    margin_rad = np.deg2rad(margin_deg)
+
+    return abs(np.sin(angle_rad)) <= np.sin(margin_rad)
+
+def is_path_valid(
+    path_x, path_y, link1_length, link2_length, bend_sign, obstacles
+    ):
+    
+    # check if the path is reachable by the arm
+    for x,y in zip(path_x, path_y):
+        solution = inverse_kinematics(
+            link1_length, link2_length, x, y, bend_sign)
+        
+        if solution is None:
+            return False
+        
+        # check if the path contains a singularity
+        _, link2_angle_deg = solution
+
+        if is_near_singularity(link2_angle_deg):
+            return False
+
+        # check if the path collides with the obstacle    
+        link1_angle_deg, link2_angle_deg = solution
+
+        link1_tip_x, link1_tip_y, link2_tip_x, link2_tip_y = (
+        forward_kinematics(
+            link1_length,
+            link2_length,
+            link1_angle_deg,
+            link2_angle_deg
+            )
+        )
+        
+        if arm_hits_obstacles(
+            link1_tip_x, link1_tip_y,
+            link2_tip_x, link2_tip_y,
+            obstacles
+            ):
+            return False
+    
+    return True
+
 # EVENT CALLBACK FUNCTIONS
 
 def update_plot(value=None, record_trail=True):
@@ -132,6 +248,17 @@ def update_plot(value=None, record_trail=True):
         [0, link1_tip_x, link2_tip_x],
         [0, link1_tip_y, link2_tip_y]
     )
+
+    collision = arm_hits_obstacles(
+        link1_tip_x, link1_tip_y,
+        link2_tip_x, link2_tip_y,
+        obstacles
+    )
+
+    if collision:
+        arm.set_color("red")
+    else:
+        arm.set_color("tab:blue")
 
     if record_trail:
         tip_x_history.append(link2_tip_x)
@@ -201,6 +328,20 @@ def reach_target(event):
     )
 
     path_x, path_y = straight_line_points( start_x, start_y, target_x, target_y )
+
+    path_is_valid = is_path_valid(
+        path_x,
+        path_y,
+        link1_length,
+        link2_length,
+        link2_bend_sign,
+        obstacles
+    )
+
+    if not path_is_valid:
+        ax.set_title("Path rejected: unreachable or near singularity or collison.")
+        fig.canvas.draw_idle()
+        return
 
     planned_path.set_data(path_x, path_y)
 
@@ -279,6 +420,17 @@ def choose_target(event):
 
 fig, ax = plt.subplots()
 fig.subplots_adjust(bottom=0.30)
+
+for obstacle in obstacles:
+    obstacle_patch = Circle(
+        (obstacle["center_x"], obstacle["center_y"]),
+        radius=obstacle["radius"],
+        facecolor="gray",
+        edgecolor="black",
+        alpha=0.5
+    )
+
+    ax.add_patch(obstacle_patch)
 
 arm, = ax.plot(
     [], [], "o-",
