@@ -229,6 +229,33 @@ def is_path_valid(
     
     return True
 
+def build_collision_grid(
+    link1_length, link2_length, obstacles, angle_values
+):
+    '''
+    Build a grid of boolean values indicating whether the arm configuration
+    corresponding to each pair of angles collides with any obstacles.
+
+    returns a 2D numpy array of shape (len(angle_values), len(angle_values)),
+    where each element is True if the arm configuration collides with an obstacle,
+    and False otherwise.
+    '''
+    count = len(angle_values)
+    collision_grid = np.zeros((count, count), dtype=bool)
+    
+    for row, link2_angle_deg in enumerate(angle_values):
+        for column, link1_angle_deg in enumerate(angle_values):
+
+            x1,y1,x2,y2 = forward_kinematics(
+                link1_length, link2_length, link1_angle_deg, link2_angle_deg
+            )
+
+            collision_grid[row, column] = arm_hits_obstacles(
+                x1, y1, x2, y2, obstacles
+            )
+    
+    return collision_grid
+
 # EVENT CALLBACK FUNCTIONS
 
 def update_plot(value=None, record_trail=True):
@@ -273,6 +300,41 @@ def update_plot(value=None, record_trail=True):
     ax.set_title(f"Distance to target: {distance:.3f} m")
     fig.canvas.draw_idle()
 
+def refresh_grid(target_x, target_y):
+
+    solution1 = inverse_kinematics(
+        link1_length,
+        link2_length,
+        target_x,
+        target_y,
+        link2_bend_sign
+    )
+
+    solution2 = inverse_kinematics(
+        link1_length,
+        link2_length,
+        target_x,
+        target_y,
+        -link2_bend_sign
+    )
+
+    if solution1 is not None:
+        target_marker1_coll_map.set_data(
+            [solution1[0]],
+            [solution1[1]]
+        )
+    else:
+        target_marker1_coll_map.set_data([], [])
+
+    if solution2 is not None:
+        target_marker2_coll_map.set_data(
+            [solution2[0]],
+            [solution2[1]]
+        )
+    else:
+        target_marker2_coll_map.set_data([], [])
+
+    grid_fig.canvas.draw_idle()
 
 def clear_trail(event):
     tip_x_history.clear()
@@ -413,6 +475,8 @@ def choose_target(event):
 
     target_marker.set_data([target_x], [target_y])
 
+    refresh_grid(target_x, target_y)
+
     # Choosing a target does not move the arm.
     update_plot(record_trail=False)
 
@@ -506,4 +570,58 @@ fig.canvas.mpl_connect("button_press_event", choose_target)
 # DRAW THE INITIAL STATE AND SHOW PLOT
 
 update_plot()
+
+grid_step_deg = 2
+angle_values = np.arange(-180, 181, grid_step_deg)
+
+collision_grid = build_collision_grid(
+    link1_length,
+    link2_length,
+    obstacles,
+    angle_values
+)
+
+grid_fig, grid_ax = plt.subplots()
+half_step = grid_step_deg / 2
+
+grid_ax.imshow(
+    collision_grid,
+    origin="lower",
+    extent=[
+        angle_values[0] - half_step,
+        angle_values[-1] + half_step,
+        angle_values[0] - half_step,
+        angle_values[-1] + half_step
+    ],
+    cmap="gray_r",
+    vmin=0,
+    vmax=1,
+    interpolation="nearest"
+)
+
+grid_ax.set_xlabel("Link 1 angle ()")
+grid_ax.set_ylabel("Link 2 angle ()")
+grid_ax.set_title("Collision map: black = blocked, white = clear")
+
+solution1 = inverse_kinematics(
+    link1_length, link2_length, target_x, target_y, link2_bend_sign
+)
+
+solution2 = inverse_kinematics(
+    link1_length, link2_length, target_x, target_y, -link2_bend_sign
+)
+
+target_marker1_coll_map, = grid_ax.plot(
+    [],[], "rx",
+    markersize=12,
+    markeredgewidth=3
+)
+
+target_marker2_coll_map, = grid_ax.plot(
+    [],[], "rx",
+    markersize=12,
+    markeredgewidth=3
+)
+
+
 plt.show()
