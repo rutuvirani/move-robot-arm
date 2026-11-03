@@ -256,6 +256,66 @@ def build_collision_grid(
     
     return collision_grid
 
+def get_neighbors(cell, grid_shape):
+    row, column = cell
+    row_count, column_count = grid_shape
+
+    neighbors = []
+
+    for row_change, column_change in [
+        (-1, 0),
+        (1, 0),
+        (0, -1),
+        (0, 1)
+    ]:
+        new_row = row + row_change
+        new_column = column + column_change
+
+        if (
+            0 <= new_row < row_count
+            and 0 <= new_column < column_count
+        ):
+            neighbors.append((new_row, new_column))
+
+    return neighbors
+
+def is_transition_clear(
+    start_cell,
+    end_cell,
+    angle_values,
+    link1_length,
+    link2_length,
+    obstacles
+):
+    start_row, start_column = start_cell
+    end_row, end_column = end_cell
+
+    link1_start = angle_values[start_column]
+    link2_start = angle_values[start_row]
+
+    link1_end = angle_values[end_column]
+    link2_end = angle_values[end_row]
+
+    for progress in np.linspace(0, 1, 21):
+        link1_angle = (
+            link1_start + progress * (link1_end - link1_start)
+        )
+        link2_angle = (
+            link2_start + progress * (link2_end - link2_start)
+        )
+
+        x1, y1, x2, y2 = forward_kinematics(
+            link1_length,
+            link2_length,
+            link1_angle,
+            link2_angle
+        )
+
+        if arm_hits_obstacles(x1, y1, x2, y2, obstacles):
+            return False
+
+    return True
+
 # EVENT CALLBACK FUNCTIONS
 
 def update_plot(value=None, record_trail=True):
@@ -603,14 +663,6 @@ grid_ax.set_xlabel("Link 1 angle ()")
 grid_ax.set_ylabel("Link 2 angle ()")
 grid_ax.set_title("Collision map: black = blocked, white = clear")
 
-solution1 = inverse_kinematics(
-    link1_length, link2_length, target_x, target_y, link2_bend_sign
-)
-
-solution2 = inverse_kinematics(
-    link1_length, link2_length, target_x, target_y, -link2_bend_sign
-)
-
 target_marker1_coll_map, = grid_ax.plot(
     [],[], "rx",
     markersize=12,
@@ -623,5 +675,18 @@ target_marker2_coll_map, = grid_ax.plot(
     markeredgewidth=3
 )
 
+start_cell = (18, 18)
+
+for neighbor in get_neighbors(start_cell, collision_grid.shape):
+    clear = is_transition_clear(
+        start_cell,
+        neighbor,
+        angle_values,
+        link1_length,
+        link2_length,
+        obstacles
+    )
+
+    print("Neighbor:", neighbor, "Clear:", clear)
 
 plt.show()
