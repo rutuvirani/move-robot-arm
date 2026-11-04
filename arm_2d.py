@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button
 from time import perf_counter
 from matplotlib.patches import Circle
+from heapq import heappush, heappop
 
 # 1. SETTINGS AND CURRENT STATE
 
@@ -315,6 +316,85 @@ def is_transition_clear(
             return False
 
     return True
+
+def find_path(
+    start_cell,
+    goal_cell,
+    collision_grid,
+    angle_values,
+    link1_length,
+    link2_length,
+    obstacles
+):
+    if collision_grid[start_cell] or collision_grid[goal_cell]:
+        return None
+    
+    def estimate(cell): # heuristic function for A* search, using Manhattan distance in the grid
+        return (
+            abs(cell[0] - goal_cell[0])
+            + abs(cell[1] - goal_cell[1])
+        )
+    
+    frontier = [] # List: priority queue of cells to explore, ordered by estimated total cost
+    heappush(frontier, (estimate(start_cell), 0, start_cell)) # (estimated total cost, cost so far / current_cost, current_cell)
+
+    came_from = {}
+    best_cost = {start_cell: 0}
+
+    # Continue searching while cells remain in the queue
+    while frontier:
+        _, current_cost, current_cell = heappop(frontier) # get the cell with the lowest estimated total cost
+
+        # Ignore an older, more expensive entry for this cell.
+        if current_cost > best_cost[current_cell]:
+            continue
+
+        if current_cell == goal_cell:      # Check if we reached the goal
+            path = [current_cell]           # Start building the path from the goal.
+
+            # Follow the parent cells backward until we reach the starting cell.
+            while current_cell != start_cell:
+                current_cell = came_from[current_cell]
+                path.append(current_cell)
+
+            path.reverse()
+            return path
+
+        # Explore the neighbors of the current cell
+        for neighbor in get_neighbors(
+            current_cell,
+            collision_grid.shape
+        ):
+        
+            if collision_grid[neighbor]:   # Skip neighbors that are blocked by obstacles
+                continue
+
+            new_cost = current_cost + 1 # Each move to a neighbor has a cost of 1
+
+            if new_cost >= best_cost.get(neighbor, float("inf")): # If we have already found a cheaper path to this neighbor, skip it.
+                continue                                          # returns infinity if the neighbor has never been visited.
+            
+            # check if the transition from current_cell to neighbor is clear of obstacles
+            if not is_transition_clear(
+                current_cell,
+                neighbor,
+                angle_values,
+                link1_length,
+                link2_length,
+                obstacles
+            ):
+                # If the robot would collide, skip this move.
+                continue
+
+            best_cost[neighbor] = new_cost
+            came_from[neighbor] = current_cell
+
+            # f(n) = g(n) + h(n)
+            priority = new_cost + estimate(neighbor) # The estimated total cost is the cost so far plus the heuristic estimate to the goal.
+
+            heappush( frontier, (priority, new_cost, neighbor) ) # Add the neighbor to the priority queue for exploration.
+
+    return None # If we exhaust the frontier without finding the goal, return None to indicate that no path exists.
 
 # EVENT CALLBACK FUNCTIONS
 
@@ -688,5 +768,38 @@ for neighbor in get_neighbors(start_cell, collision_grid.shape):
     )
 
     print("Neighbor:", neighbor, "Clear:", clear)
+
+start_cell = (18, 18)  # Link 1 = 0°, link 2 = 0°
+goal_cell = (10, 9)   # Link 1 = -90°, link 2 = 0°
+
+path = find_path(
+    start_cell,
+    goal_cell,
+    collision_grid,
+    angle_values,
+    link1_length,
+    link2_length,
+    obstacles
+)
+
+if path is None:
+    print("No route found on this grid.")
+else:
+    path_link1_angles = []
+    path_link2_angles = []
+
+    for row, column in path:
+        path_link1_angles.append(angle_values[column])
+        path_link2_angles.append(angle_values[row])
+
+    grid_ax.plot(
+        path_link1_angles,
+        path_link2_angles,
+        "o-",
+        color="lime",
+        markersize=3
+    )
+
+    print("Route found. Number of moves:", len(path) - 1)
 
 plt.show()
