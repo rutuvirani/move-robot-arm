@@ -16,7 +16,7 @@ link2_initial_angle_deg = 45.0
 target_x = 1.0
 target_y = 0.5
 
-link2_bend_sign = 1 # decides whether the elbow bends up (1) or down (-1)
+link2_bend_sign = 1 # Selects the positive (1) or negative (-1) elbow-angle solution.
 
 tip_x_history = []
 tip_y_history = []
@@ -31,6 +31,16 @@ obstacles = [
 
 # CALCULATIONS
 def straight_line_points(start_x, start_y, end_x, end_y, count=61):
+    '''Generate evenly spaced points along a straight line.
+
+    Args:
+        start_x, start_y (float): Starting position in meters.
+        end_x, end_y (float): Ending position in meters.
+        count (int): Number of samples, including both endpoints when >= 2.
+
+    Returns:
+        tuple: NumPy arrays (path_x, path_y) containing the sampled coordinates.
+    '''
     progress = np.linspace(0, 1, count)
 
     path_x = start_x + progress * (end_x - start_x)
@@ -39,24 +49,42 @@ def straight_line_points(start_x, start_y, end_x, end_y, count=61):
     return path_x, path_y
 
 def link_displacement(length, angle_deg):
-    """Return a link's horizontal and vertical displacement."""
+    '''Calculate a link's horizontal and vertical displacement.
+
+    Args:
+        length (float): Link length in meters.
+        angle_deg (float): Counterclockwise angle from the positive x-axis.
+
+    Returns:
+        tuple: Displacement (dx, dy) in meters.
+    '''
     angle_rad = np.deg2rad(angle_deg)
 
-    dx = length * np.cos(angle_rad) # dx = l * cos(theta)
-    dy = length * np.sin(angle_rad) # dy = l * sin(theta)
+    dx = length * np.cos(angle_rad)
+    dy = length * np.sin(angle_rad)
 
     return dx, dy
 
 def forward_kinematics(
     link1_length, link2_length, link1_angle_deg, link2_angle_deg
 ):
-    """Calculate both link tips from the joint angles."""
+    '''Calculate the elbow and end-effector positions from joint angles.
+
+    Args:
+        link1_length, link2_length (float): Link lengths in meters.
+        link1_angle_deg (float): Link 1 angle relative to the positive x-axis.
+        link2_angle_deg (float): Link 2 angle relative to link 1.
+
+    Returns:
+        tuple: (link1_tip_x, link1_tip_y, link2_tip_x, link2_tip_y)
+            in meters, with the arm's base at (0, 0).
+    '''
     link1_tip_x, link1_tip_y = link_displacement(
         link1_length, link1_angle_deg
     )
 
     link2_dx, link2_dy = link_displacement(
-        link2_length, link1_angle_deg + link2_angle_deg  # the second link's angle is relative to the first link's angle
+        link2_length, link1_angle_deg + link2_angle_deg  # Convert link 2's relative angle to a world angle.
     )
 
     link2_tip_x = link1_tip_x + link2_dx
@@ -67,13 +95,27 @@ def forward_kinematics(
 def inverse_kinematics(
     link1_length, link2_length, target_x, target_y, link2_bend_sign
 ):
-    """Return joint angles in degrees, or None if unreachable."""
+    '''Calculate one joint-angle solution for a target position.
+
+    Args:
+        link1_length, link2_length (float): Positive link lengths in meters.
+        target_x, target_y (float): Target position in meters.
+        link2_bend_sign (int): Elbow-angle branch: 1 or -1.
+
+    Returns:
+        tuple or None: (link1_angle_deg, link2_angle_deg), or None if
+            unreachable. Link 1's angle is normalized to [-180, 180).
+
+    Notes:
+        Checks geometric reachability only, not collisions or singularities.
+    '''
+    # Use the law of cosines to solve for the elbow angle.
     cos_link2_angle = (
         target_x ** 2
         + target_y ** 2
         - link1_length ** 2
         - link2_length ** 2
-    ) / (2 * link1_length * link2_length) # cos(theta2) = (x^2 + y^2 - l1^2 - l2^2) / (2 * l1 * l2) paythagorean theorem
+    ) / (2 * link1_length * link2_length)
 
 
     # Allow tiny floating-point errors at the workspace boundary.
@@ -91,9 +133,9 @@ def inverse_kinematics(
     if target_x == 0 and target_y == 0 and link1_length == link2_length:
         return 0.0, link2_bend_sign * 180.0
     
-    link2_angle_rad = (link2_bend_sign * np.arccos(cos_link2_angle)) # theta2 = sign * arccos(cos(theta2))
+    link2_angle_rad = (link2_bend_sign * np.arccos(cos_link2_angle))
 
-    # theta1 = atan2(y, x) - atan2(l2 * sin(theta2), l1 + l2 * cos(theta2))
+    # Subtract the elbow-induced offset from the target direction.
     target_direction_rad = np.arctan2(target_y, target_x)
     offset_rad = np.arctan2(
         link2_length * np.sin(link2_angle_rad),
@@ -110,6 +152,19 @@ def inverse_kinematics(
     return link1_angle_deg, link2_angle_deg
 
 def interpolate_angle(start_angle_deg, end_angle_deg, progress):
+    '''Linearly interpolate between two angles without wrapping.
+
+    Args:
+        start_angle_deg (float): Starting angle in degrees.
+        end_angle_deg (float): Ending angle in degrees.
+        progress (float): Interpolation fraction, normally from 0 to 1.
+
+    Returns:
+        float: Interpolated angle in degrees.
+
+    Notes:
+        Uses the direct angle difference, which may not be the shortest turn.
+    '''
     angle_deg = (
         start_angle_deg
         + progress * (end_angle_deg - start_angle_deg)
@@ -117,49 +172,65 @@ def interpolate_angle(start_angle_deg, end_angle_deg, progress):
 
     return angle_deg
 
-def smooth_progress(progress): # we use a cubic polynomial to smooth the progress of the movement, so that it starts and ends slowly
-    return 3 * progress ** 2 - 2 * progress ** 3 # 3s^2 - 2s^3
+def smooth_progress(progress):
+    '''Apply cubic easing to a movement's progress.
+
+    Args:
+        progress (float): Linear progress from 0 to 1.
+
+    Returns:
+        float: Eased progress using 3s^2 - 2s^3, with zero slope at
+            both endpoints. Input values are not clamped.
+    '''
+    return 3 * progress ** 2 - 2 * progress ** 3
 
 def segment_hits_circle(
     start_x, start_y, end_x, end_y, obstacle, clearance=0.06
 ):
-    # Direction of the robot link from the start point to the end point.
+    '''Check whether a line segment touches an obstacle's clearance region.
+
+    Args:
+        start_x, start_y (float): Segment start in meters.
+        end_x, end_y (float): Segment end in meters.
+        obstacle (dict): Circle with center_x, center_y, and radius in meters.
+        clearance (float): Extra distance added to the obstacle radius.
+
+    Returns:
+        bool: True if the segment touches or enters the expanded circle.
+    '''
+    # Segment direction.
     dx = end_x - start_x
     dy = end_y - start_y
 
-    # Direction from the start of the link to the center of the obstacle.
+    # Vector from the segment start to the circle center.
     center_dx = obstacle["center_x"] - start_x
     center_dy = obstacle["center_y"] - start_y
 
-    # Length of the link squared.We use squared length because it is enough for the projection calculation.
     length_squared = dx ** 2 + dy ** 2
 
-    # Special case: if start and end are the same point, the link has zero length.
+    # Treat a zero-length segment as a point.
     if length_squared == 0:
         closest_x = start_x
         closest_y = start_y
 
     else:
-        # Find where the obstacle center projects onto the link.
-        # fraction = 0   -> start of the link, fraction = 0.5 -> middle of the link, fraction = 1   -> end of the link
+        # Project the circle center onto the segment's line.
         fraction = (
             center_dx * dx + center_dy * dy
         ) / length_squared
 
-        # The mathematical projection can fall outside the actual link.
+        # Clamp the projection to the actual segment endpoints.
         fraction = np.clip(fraction, 0.0, 1.0)
 
-        # Calculate the closest point on the link to the obstacle center.
         closest_x = start_x + fraction * dx
         closest_y = start_y + fraction * dy
 
-    # Calculate the distance between: # obstacle center <-> closest point on the robot link
+    # Distance from the circle center to the closest segment point.
     distance = np.sqrt(
         (obstacle["center_x"] - closest_x) ** 2
         + (obstacle["center_y"] - closest_y) ** 2
     )
 
-    # Collision happens when the distance is smaller than the obstacle radius plus a small safety clearance. 
     return distance <= obstacle["radius"] + clearance
 
 def arm_hits_obstacles(
@@ -167,6 +238,20 @@ def arm_hits_obstacles(
     link2_tip_x, link2_tip_y,
     obstacles
 ):
+    '''Check both robot links against all circular obstacles.
+
+    Args:
+        link1_tip_x, link1_tip_y (float): Elbow position in meters.
+        link2_tip_x, link2_tip_y (float): End-effector position in meters.
+        obstacles (list): Circle dictionaries with center_x, center_y,
+            and radius in meters.
+
+    Returns:
+        bool: True if either link touches an obstacle's clearance region.
+
+    Notes:
+        Uses a base at (0, 0) and segment_hits_circle's default clearance.
+    '''
     for obstacle in obstacles:
         link1_collision = segment_hits_circle(
             0, 0,
@@ -186,6 +271,16 @@ def arm_hits_obstacles(
     return False
 
 def is_near_singularity(link2_angle_deg, margin_deg=5.0):
+    '''Check whether the arm is nearly straight or fully folded.
+
+    Args:
+        link2_angle_deg (float): Link 2 angle relative to link 1, in degrees.
+        margin_deg (float): Angular tolerance; intended range is 0 to 90.
+
+    Returns:
+        bool: True if the elbow angle is within the margin of a
+            multiple of 180 degrees.
+    '''
     angle_rad = np.deg2rad(link2_angle_deg)
     margin_rad = np.deg2rad(margin_deg)
 
@@ -194,8 +289,22 @@ def is_near_singularity(link2_angle_deg, margin_deg=5.0):
 def is_path_valid(
     path_x, path_y, link1_length, link2_length, bend_sign, obstacles
     ):
+    '''Validate sampled Cartesian positions using one elbow-angle branch.
+
+    Args:
+        path_x, path_y (sequence): Matching path coordinates in meters.
+        link1_length, link2_length (float): Link lengths in meters.
+        bend_sign (int): Elbow-angle branch: 1 or -1.
+        obstacles (list): Circular obstacles to check against both links.
+
+    Returns:
+        bool: True if every sampled pose is reachable, outside the
+            singularity margin, and clear of obstacles.
+
+    Notes:
+        Only supplied samples are checked, not the motion between them.
+    '''
     
-    # check if the path is reachable by the arm
     for x,y in zip(path_x, path_y):
         solution = inverse_kinematics(
             link1_length, link2_length, x, y, bend_sign)
@@ -203,13 +312,12 @@ def is_path_valid(
         if solution is None:
             return False
         
-        # check if the path contains a singularity
         _, link2_angle_deg = solution
 
         if is_near_singularity(link2_angle_deg):
             return False
 
-        # check if the path collides with the obstacle    
+        # Check both links, not only the end-effector position.
         link1_angle_deg, link2_angle_deg = solution
 
         link1_tip_x, link1_tip_y, link2_tip_x, link2_tip_y = (
@@ -233,13 +341,20 @@ def is_path_valid(
 def build_collision_grid(
     link1_length, link2_length, obstacles, angle_values
 ):
-    '''
-    Build a grid of boolean values indicating whether the arm configuration
-    corresponding to each pair of angles collides with any obstacles.
+    '''Build an obstacle-collision map for pairs of joint angles.
 
-    returns a 2D numpy array of shape (len(angle_values), len(angle_values)),
-    where each element is True if the arm configuration collides with an obstacle,
-    and False otherwise.
+    Args:
+        link1_length, link2_length (float): Link lengths in meters.
+        obstacles (list): Circular obstacles to check against both links.
+        angle_values (numpy.ndarray): Joint-angle samples in degrees.
+
+    Returns:
+        numpy.ndarray: Boolean grid of shape (N, N), where N is the
+            number of angles. Rows represent link 2; columns represent
+            link 1. True means collision, including clearance.
+
+    Notes:
+        Singularities are not marked as blocked unless a collision occurs.
     '''
     count = len(angle_values)
     collision_grid = np.zeros((count, count), dtype=bool)
@@ -258,6 +373,16 @@ def build_collision_grid(
     return collision_grid
 
 def get_neighbors(cell, grid_shape):
+    '''Return the in-bounds horizontal and vertical neighbors of a cell.
+
+    Args:
+        cell (tuple): Current (row, column).
+        grid_shape (tuple): Grid size as (row_count, column_count).
+
+    Returns:
+        list: Adjacent (row, column) cells without diagonals or edge wrapping.
+            Occupancy is not checked.
+    '''
     row, column = cell
     row_count, column_count = grid_shape
 
@@ -281,7 +406,18 @@ def get_neighbors(cell, grid_shape):
     return neighbors
 
 def angles_to_cell(link1_angle_deg, link2_angle_deg, angle_values):
-    # Convert joint angles to the corresponding cell in the collision grid.
+    '''Map joint angles to the nearest sampled grid cell.
+
+    Args:
+        link1_angle_deg, link2_angle_deg (float): Joint angles in degrees.
+        angle_values (numpy.ndarray): Nonempty array of grid angles.
+
+    Returns:
+        tuple: (row, column), with link 2 as the row and link 1 as the column.
+
+    Notes:
+        Uses absolute angle differences without wrapping or collision checks.
+    '''
     column = int(np.argmin(np.abs(angle_values - link1_angle_deg)))
     row = int(np.argmin(np.abs(angle_values - link2_angle_deg)))
 
@@ -295,6 +431,21 @@ def is_transition_clear(
     link2_length,
     obstacles
 ):
+    '''Sample a joint-space transition and check it for obstacle collisions.
+
+    Args:
+        start_cell, end_cell (tuple): Grid cells as (row, column).
+        angle_values (numpy.ndarray): Grid angles in degrees.
+        link1_length, link2_length (float): Link lengths in meters.
+        obstacles (list): Circular obstacles to check against both links.
+
+    Returns:
+        bool: True if all 21 interpolated poses, including endpoints,
+            are clear of obstacles.
+
+    Notes:
+        Does not check singularities or guarantee clearance between samples.
+    '''
     start_row, start_column = start_cell
     end_row, end_column = end_cell
 
@@ -333,33 +484,51 @@ def find_path(
     link2_length,
     obstacles
 ):
+    '''Find a joint-grid route using A* search and sampled collision checks.
+
+    Args:
+        start_cell, goal_cell (tuple): Valid grid indices as (row, column).
+        collision_grid (numpy.ndarray): Boolean grid; True marks blocked cells.
+        angle_values (numpy.ndarray): Grid angles in degrees.
+        link1_length, link2_length (float): Link lengths in meters.
+        obstacles (list): Circular obstacles used to check transitions.
+
+    Returns:
+        list or None: Route cells from start to goal, including both
+            endpoints, or None if an endpoint is blocked or no route exists.
+
+    Notes:
+        Uses four-way moves with unit cost and a Manhattan heuristic.
+        Does not check singularities or wrap across grid boundaries.
+    '''
     if collision_grid[start_cell] or collision_grid[goal_cell]:
         return None
     
-    def estimate(cell): # heuristic function for A* search, using Manhattan distance in the grid
+    def estimate(cell):
+        '''Return the Manhattan-distance estimate from cell to goal_cell.'''
         return (
             abs(cell[0] - goal_cell[0])
             + abs(cell[1] - goal_cell[1])
         )
     
-    frontier = [] # List: priority queue of cells to explore, ordered by estimated total cost
-    heappush(frontier, (estimate(start_cell), 0, start_cell)) # (estimated total cost, cost so far / current_cost, current_cell)
+    frontier = []
+    # Heap entries: (estimated total cost, cost so far, cell).
+    heappush(frontier, (estimate(start_cell), 0, start_cell))
 
     came_from = {}
     best_cost = {start_cell: 0}
 
-    # Continue searching while cells remain in the queue
     while frontier:
-        _, current_cost, current_cell = heappop(frontier) # get the cell with the lowest estimated total cost
+        _, current_cost, current_cell = heappop(frontier)
 
         # Ignore an older, more expensive entry for this cell.
         if current_cost > best_cost[current_cell]:
             continue
 
-        if current_cell == goal_cell:      # Check if we reached the goal
-            path = [current_cell]           # Start building the path from the goal.
+        if current_cell == goal_cell:
+            path = [current_cell]
 
-            # Follow the parent cells backward until we reach the starting cell.
+            # Follow parents backward, then reverse into start-to-goal order.
             while current_cell != start_cell:
                 current_cell = came_from[current_cell]
                 path.append(current_cell)
@@ -367,21 +536,21 @@ def find_path(
             path.reverse()
             return path
 
-        # Explore the neighbors of the current cell
         for neighbor in get_neighbors(
             current_cell,
             collision_grid.shape
         ):
         
-            if collision_grid[neighbor]:   # Skip neighbors that are blocked by obstacles
+            if collision_grid[neighbor]:
                 continue
 
-            new_cost = current_cost + 1 # Each move to a neighbor has a cost of 1
+            new_cost = current_cost + 1
 
-            if new_cost >= best_cost.get(neighbor, float("inf")): # If we have already found a cheaper path to this neighbor, skip it.
-                continue                                          # returns infinity if the neighbor has never been visited.
+            # Unvisited cells have infinite cost; keep only better routes.
+            if new_cost >= best_cost.get(neighbor, float("inf")):
+                continue
             
-            # check if the transition from current_cell to neighbor is clear of obstacles
+            # Clear endpoints alone do not ensure a clear transition.
             if not is_transition_clear(
                 current_cell,
                 neighbor,
@@ -390,22 +559,32 @@ def find_path(
                 link2_length,
                 obstacles
             ):
-                # If the robot would collide, skip this move.
                 continue
 
             best_cost[neighbor] = new_cost
             came_from[neighbor] = current_cell
 
-            # f(n) = g(n) + h(n)
-            priority = new_cost + estimate(neighbor) # The estimated total cost is the cost so far plus the heuristic estimate to the goal.
+            # A* priority: actual cost so far + estimated remaining cost.
+            priority = new_cost + estimate(neighbor)
 
-            heappush( frontier, (priority, new_cost, neighbor) ) # Add the neighbor to the priority queue for exploration.
+            heappush( frontier, (priority, new_cost, neighbor) )
 
-    return None # If we exhaust the frontier without finding the goal, return None to indicate that no path exists.
+    return None
 
 # EVENT CALLBACK FUNCTIONS
 
 def update_plot(value=None, record_trail=True):
+    '''Redraw the arm, collision color, trail, and target distance.
+
+    Args:
+        value (float or None): Slider callback value; unused because both
+            angles are read directly from the sliders.
+        record_trail (bool): Whether to append the current tip position.
+
+    Notes:
+        Updates global plot objects and, when requested, trail histories.
+        Collisions change the arm's color but do not prevent movement.
+    '''
     link1_angle_deg = link1_slider.val
     link2_angle_deg = link2_slider.val
 
@@ -448,6 +627,16 @@ def update_plot(value=None, record_trail=True):
     fig.canvas.draw_idle()
 
 def refresh_grid(target_x, target_y):
+    '''Update the collision-map markers for both target IK solutions.
+
+    Args:
+        target_x, target_y (float): Target position in meters.
+
+    Notes:
+        Hides unreachable solutions. Markers indicate IK solutions only;
+        they are not checked for collisions or singularities here.
+        The collision grid itself is not rebuilt.
+    '''
 
     solution1 = inverse_kinematics(
         link1_length,
@@ -484,6 +673,11 @@ def refresh_grid(target_x, target_y):
     grid_fig.canvas.draw_idle()
 
 def clear_trail(event):
+    '''Clear the recorded end-effector positions and redraw the empty trail.
+
+    Args:
+        event (MouseEvent): Button callback event; unused.
+    '''
     tip_x_history.clear()
     tip_y_history.clear()
 
@@ -491,6 +685,15 @@ def clear_trail(event):
     fig.canvas.draw_idle()
 
 def set_joint_angles(link1_angle_deg, link2_angle_deg):
+    '''Update both joint sliders and redraw the arm once.
+
+    Args:
+        link1_angle_deg, link2_angle_deg (float): Joint angles in degrees.
+
+    Notes:
+        Temporarily disables slider callbacks to avoid drawing a partial
+        update. The final pose is added to the trail by update_plot.
+    '''
     link1_slider.eventson = False
     link2_slider.eventson = False
 
@@ -503,9 +706,20 @@ def set_joint_angles(link1_angle_deg, link2_angle_deg):
     update_plot()
 
 def reach_target(event):
+    '''Validate and animate a straight end-effector path to the target.
+
+    Args:
+        event (MouseEvent): Button callback event; unused.
+
+    Notes:
+        Stops any existing animation and checks sampled path poses using
+        the selected elbow branch. If accepted, starts a timer with cubic
+        easing over movement_duration_s. Rejections appear in the plot title.
+        This callback does not follow the A* grid route.
+    '''
     global motion_timer
 
-    # stop any previous movement
+    # Stop any previous movement before validating a new one.
     if motion_timer is not None:
         motion_timer.stop()
         motion_timer = None
@@ -525,7 +739,7 @@ def reach_target(event):
 
     link1_end_deg, link2_end_deg = solution
 
-    # Set both angles before updating the arm.
+    # Capture the current pose as the movement's starting point.
     link1_start_deg = link1_slider.val
     link2_start_deg = link2_slider.val
 
@@ -554,27 +768,35 @@ def reach_target(event):
 
     planned_path.set_data(path_x, path_y)
 
+    # Keep this movement's target and elbow branch fixed during animation.
     end_x = target_x
     end_y = target_y
     movement_bend_sign = link2_bend_sign
 
-    # progress_steps = iter(np.linspace(0, 1, 61)) # uncomment in case we want to use a fixed number of steps instead of time-based animation
+    # progress_steps = iter(np.linspace(0, 1, 61)) # Optional fixed-step animation.
     start_time = perf_counter()
 
     def animate_step():
-        # uncomment in case we want to use a fixed number of steps instead of time-based animation
+        '''Advance one animation frame using elapsed time and Cartesian IK.
+
+        Uses the start position, target, and elbow branch captured by
+        reach_target. Updates the joint sliders and stops the timer when
+        complete or when a position is unreachable.
+        '''
+        # Optional fixed-step alternative to elapsed-time progress.
         # progress = next(progress_steps, None) 
         # if progress is None: 
         #     motion_timer.stop()
         #     return
 
         elapsed_time = perf_counter() - start_time
-        progress = min(elapsed_time / movement_duration_s, 1.0) # linear progress from 0 to 1 over the duration of the movement
+        progress = min(elapsed_time / movement_duration_s, 1.0)
         smoothed_progress = smooth_progress(progress)
         
         # link1_angle_deg = interpolate_angle(link1_start_deg,link1_end_deg, smoothed_progress)
         # link2_angle_deg = interpolate_angle(link2_start_deg,link2_end_deg, smoothed_progress)
 
+        # Interpolate Cartesian position to keep the tip on a straight line.
         current_x = start_x + smoothed_progress * (end_x - start_x)
         current_y = start_y + smoothed_progress * (end_y - start_y)
 
@@ -605,6 +827,14 @@ def reach_target(event):
     update_plot()
 
 def flip_link2(event):
+    '''Toggle the elbow-angle branch and attempt to reach the current target.
+
+    Args:
+        event (MouseEvent): Button event forwarded to reach_target.
+
+    Notes:
+        Changes the global branch even if the subsequent movement is rejected.
+    '''
     global link2_bend_sign
 
     link2_bend_sign = -link2_bend_sign
@@ -612,6 +842,15 @@ def flip_link2(event):
 
 
 def choose_target(event):
+    '''Set a new target from a left click inside the arm plot.
+
+    Args:
+        event (MouseEvent): Mouse event containing axes, button, and position.
+
+    Notes:
+        Updates the global target and target markers without recording a
+        trail point. Does not start movement or stop an existing animation.
+    '''
     global target_x, target_y
 
     if event.inaxes != ax or event.button != 1:
@@ -624,10 +863,20 @@ def choose_target(event):
 
     refresh_grid(target_x, target_y)
 
-    # Choosing a target does not move the arm.
+    # Refresh the distance display without adding a trail point.
     update_plot(record_trail=False)
 
 def preview_route(event):
+    '''Find and display an A* route on the joint-angle collision map.
+
+    Args:
+        event (MouseEvent): Button callback event; unused.
+
+    Notes:
+        Stops the current animation and maps the current and target angles
+        to their nearest grid cells. Displays the route without executing it.
+        Connections from exact poses to snapped grid cells are not checked.
+    '''
     # Freeze the current pose before planning.
     if motion_timer is not None:
         motion_timer.stop()
@@ -636,7 +885,6 @@ def preview_route(event):
     grid_route.set_data([], [])
     grid_fig.canvas.draw_idle()
 
-    # Convert the target position into joint angles.
     solution = inverse_kinematics(
         link1_length,
         link2_length,
@@ -652,7 +900,7 @@ def preview_route(event):
 
     link1_goal_deg, link2_goal_deg = solution
 
-    # Map current and target angles to nearby grid cells.
+    # Snap current and target angles to the discrete planning grid.
     start_cell = angles_to_cell(
         link1_slider.val, link2_slider.val, angle_values
     )
@@ -660,7 +908,6 @@ def preview_route(event):
         link1_goal_deg, link2_goal_deg, angle_values
     )
 
-    # Search the collision grid.
     path = find_path(
         start_cell,
         goal_cell,
@@ -798,6 +1045,7 @@ collision_grid = build_collision_grid(
 grid_fig, grid_ax = plt.subplots()
 half_step = grid_step_deg / 2
 
+# Offset image edges so each pixel center matches its sampled joint angles.
 grid_ax.imshow(
     collision_grid,
     origin="lower",
@@ -829,7 +1077,7 @@ target_marker2_coll_map, = grid_ax.plot(
     markeredgewidth=3
 )
 
-# Keep one line that we can update with each new route.
+# Reuse this line when displaying each new planned route.
 grid_route, = grid_ax.plot(
     [], [], "o-",
     color="lime",
