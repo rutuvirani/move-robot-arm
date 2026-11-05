@@ -280,6 +280,13 @@ def get_neighbors(cell, grid_shape):
 
     return neighbors
 
+def angles_to_cell(link1_angle_deg, link2_angle_deg, angle_values):
+    # Convert joint angles to the corresponding cell in the collision grid.
+    column = int(np.argmin(np.abs(angle_values - link1_angle_deg)))
+    row = int(np.argmin(np.abs(angle_values - link2_angle_deg)))
+
+    return row, column
+
 def is_transition_clear(
     start_cell,
     end_cell,
@@ -620,6 +627,70 @@ def choose_target(event):
     # Choosing a target does not move the arm.
     update_plot(record_trail=False)
 
+def preview_route(event):
+    # Freeze the current pose before planning.
+    if motion_timer is not None:
+        motion_timer.stop()
+
+    # Remove the previous route.
+    grid_route.set_data([], [])
+    grid_fig.canvas.draw_idle()
+
+    # Convert the target position into joint angles.
+    solution = inverse_kinematics(
+        link1_length,
+        link2_length,
+        target_x,
+        target_y,
+        link2_bend_sign
+    )
+
+    if solution is None:
+        ax.set_title("Target is outside the arm's reach.")
+        fig.canvas.draw_idle()
+        return
+
+    link1_goal_deg, link2_goal_deg = solution
+
+    # Map current and target angles to nearby grid cells.
+    start_cell = angles_to_cell(
+        link1_slider.val, link2_slider.val, angle_values
+    )
+    goal_cell = angles_to_cell(
+        link1_goal_deg, link2_goal_deg, angle_values
+    )
+
+    # Search the collision grid.
+    path = find_path(
+        start_cell,
+        goal_cell,
+        collision_grid,
+        angle_values,
+        link1_length,
+        link2_length,
+        obstacles
+    )
+
+    if path is None:
+        ax.set_title("No route found between the selected grid cells.")
+        fig.canvas.draw_idle()
+        return
+
+    # Convert grid indices back into angles for plotting.
+    route_link1 = []
+    route_link2 = []
+
+    for row, column in path:
+        route_link1.append(angle_values[column])
+        route_link2.append(angle_values[row])
+
+    grid_route.set_data(route_link1, route_link2)
+    grid_ax.set_title(f"Grid route: {len(path) - 1} moves")
+    grid_fig.canvas.draw_idle()
+
+    ax.set_title("Grid route preview ready.")
+    fig.canvas.draw_idle()
+
 #   THE FIGURE AND PLOTTED OBJECTS
 
 fig, ax = plt.subplots()
@@ -689,10 +760,12 @@ link2_slider = Slider(
 reach_area = fig.add_axes([0.25, 0.01, 0.25, 0.04])
 flip_area = fig.add_axes([0.53, 0.01, 0.22, 0.04])
 clear_area = fig.add_axes([0.78, 0.01, 0.18, 0.04])
+plan_area = fig.add_axes([0.02, 0.01, 0.19, 0.04])
 
 reach_button = Button(reach_area, "Reach target")
 flip_button = Button(flip_area, "Flip link 2")
 clear_button = Button(clear_area, "Clear trail")
+plan_button = Button(plan_area, "Plan route")
 
 
 # CONNECT EVENTS
@@ -703,6 +776,7 @@ link2_slider.on_changed(update_plot)
 reach_button.on_clicked(reach_target)
 flip_button.on_clicked(flip_link2)
 clear_button.on_clicked(clear_trail)
+plan_button.on_clicked(preview_route)
 
 fig.canvas.mpl_connect("button_press_event", choose_target)
 
@@ -755,51 +829,11 @@ target_marker2_coll_map, = grid_ax.plot(
     markeredgewidth=3
 )
 
-start_cell = (18, 18)
-
-for neighbor in get_neighbors(start_cell, collision_grid.shape):
-    clear = is_transition_clear(
-        start_cell,
-        neighbor,
-        angle_values,
-        link1_length,
-        link2_length,
-        obstacles
-    )
-
-    print("Neighbor:", neighbor, "Clear:", clear)
-
-start_cell = (18, 18)  # Link 1 = 0°, link 2 = 0°
-goal_cell = (10, 9)   # Link 1 = -90°, link 2 = 0°
-
-path = find_path(
-    start_cell,
-    goal_cell,
-    collision_grid,
-    angle_values,
-    link1_length,
-    link2_length,
-    obstacles
+# Keep one line that we can update with each new route.
+grid_route, = grid_ax.plot(
+    [], [], "o-",
+    color="lime",
+    markersize=3
 )
-
-if path is None:
-    print("No route found on this grid.")
-else:
-    path_link1_angles = []
-    path_link2_angles = []
-
-    for row, column in path:
-        path_link1_angles.append(angle_values[column])
-        path_link2_angles.append(angle_values[row])
-
-    grid_ax.plot(
-        path_link1_angles,
-        path_link2_angles,
-        "o-",
-        color="lime",
-        markersize=3
-    )
-
-    print("Route found. Number of moves:", len(path) - 1)
 
 plt.show()
