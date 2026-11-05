@@ -475,6 +475,47 @@ def is_transition_clear(
 
     return True
 
+def is_joint_motion_clear(
+    start_angles, end_angles,
+    link1_length, link2_length, obstacles
+):
+    '''
+    Sample a joint-angle transition and check it for obstacle collisions.
+    
+    Args:
+        start_angles, end_angles (tuple): Joint angles in degrees.
+        link1_length, link2_length (float): Link lengths in meters.
+        obstacles (list): Circular obstacles to check against both links.
+
+    Returns:
+        bool: True if all sampled poses, including endpoints, are clear of obstacles.
+    '''
+    # Each pose contains two joint angles in degrees.
+    link1_start, link2_start = start_angles
+    link1_end, link2_end = end_angles
+
+    # Sample at intervals no larger than 0.5° per joint.
+    largest_change = max(
+        abs(link1_end - link1_start),
+        abs(link2_end - link2_start)
+    )
+    sample_count = max(2, int(np.ceil(largest_change / 0.5)) + 1)
+
+    for progress in np.linspace(0, 1, sample_count):
+        # Interpolate both joint angles.
+        link1_angle = link1_start + progress * (link1_end - link1_start)
+        link2_angle = link2_start + progress * (link2_end - link2_start)
+
+        x1, y1, x2, y2 = forward_kinematics(
+            link1_length, link2_length,
+            link1_angle, link2_angle
+        )
+
+        if arm_hits_obstacles(x1, y1, x2, y2, obstacles):
+            return False
+
+    return True
+
 def find_path(
     start_cell,
     goal_cell,
@@ -938,14 +979,52 @@ def preview_route(event):
         ax.set_title("No route found between the selected grid cells.")
         fig.canvas.draw_idle()
         return
+    
+    # Preserve the exact current and target configurations.
+    exact_start = (link1_slider.val, link2_slider.val)
+    exact_goal = (link1_goal_deg, link2_goal_deg)
 
-    # Convert grid indices back into angles for plotting.
-    route_link1 = []
-    route_link2 = []
+    # Convert the route's endpoint cells into joint angles.
+    start_row, start_column = path[0]
+    goal_row, goal_column = path[-1]
 
+    grid_start = (
+        angle_values[start_column],
+        angle_values[start_row]
+    )
+    grid_goal = (
+        angle_values[goal_column],
+        angle_values[goal_row]
+    )
+
+    # Check the short movements onto and off the grid.
+    start_clear = is_joint_motion_clear(
+        exact_start, grid_start,
+        link1_length, link2_length, obstacles
+    )
+
+    goal_clear = is_joint_motion_clear(
+        grid_goal, exact_goal,
+        link1_length, link2_length, obstacles
+    )
+
+    if not start_clear or not goal_clear:
+        ax.set_title("Cannot connect the exact pose to this grid route.")
+        fig.canvas.draw_idle()
+        return
+
+    # Begin with the exact starting angles.
+    route_link1 = [exact_start[0]]
+    route_link2 = [exact_start[1]]
+
+    # Add the grid route.
     for row, column in path:
         route_link1.append(angle_values[column])
         route_link2.append(angle_values[row])
+
+    # Finish with the exact target angles.
+    route_link1.append(exact_goal[0])
+    route_link2.append(exact_goal[1])
 
     grid_route.set_data(route_link1, route_link2)
     grid_ax.set_title(f"Grid route: {len(path) - 1} moves")
@@ -1045,7 +1124,7 @@ fig.canvas.mpl_connect("button_press_event", choose_target)
 
 # DRAW THE INITIAL STATE AND SHOW PLOT
 
-grid_step_deg = 2
+grid_step_deg = 20
 angle_values = np.arange(-180, 181, grid_step_deg)
 
 collision_grid = build_collision_grid(
