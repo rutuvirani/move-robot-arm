@@ -389,10 +389,9 @@ def get_neighbors(cell, grid_shape):
     neighbors = []
 
     for row_change, column_change in [
-        (-1, 0),
-        (1, 0),
-        (0, -1),
-        (0, 1)
+        (-1,-1),(0,-1),(1,-1),
+        (-1,0),(1,0),
+        (-1,1),(0,1),(1,1)
     ]:
         new_row = row + row_change
         new_column = column + column_change
@@ -539,18 +538,18 @@ def find_path(
             endpoints, or None if an endpoint is blocked or no route exists.
 
     Notes:
-        Uses four-way moves with unit cost and a Manhattan heuristic.
+        Uses four-way moves with unit cost and a octile heuristic.
         Does not check singularities or wrap across grid boundaries.
     '''
     if collision_grid[start_cell] or collision_grid[goal_cell]:
         return None
     
     def estimate(cell):
-        '''Return the Manhattan-distance estimate from cell to goal_cell.'''
-        return (
+        '''Return the octile-distance estimate from cell to goal_cell.'''
+        return max(
             abs(cell[0] - goal_cell[0])
-            + abs(cell[1] - goal_cell[1])
-        )
+            , abs(cell[1] - goal_cell[1])
+        ) + np.sqrt(2) * min(abs(cell[0] - goal_cell[0]), abs(cell[1] - goal_cell[1]))
     
     frontier = []
     # Heap entries: (estimated total cost, cost so far, cell).
@@ -584,8 +583,11 @@ def find_path(
         
             if collision_grid[neighbor]:
                 continue
+            
+            # Use octile distance for the cost of moving to a neighbor.
+            cell_difference = current_cell[0] - neighbor[0], current_cell[1] - neighbor[1] 
 
-            new_cost = current_cost + 1
+            new_cost = current_cost + np.hypot(cell_difference[0], cell_difference[1])
 
             # Unvisited cells have infinite cost; keep only better routes.
             if new_cost >= best_cost.get(neighbor, float("inf")):
@@ -1240,7 +1242,7 @@ fig.canvas.mpl_connect("button_press_event", choose_target)
 
 # DRAW THE INITIAL STATE AND SHOW PLOT
 
-grid_step_deg = 20
+grid_step_deg = 5
 angle_values = np.arange(-180, 181, grid_step_deg)
 
 collision_grid = build_collision_grid(
