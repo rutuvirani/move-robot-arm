@@ -10,8 +10,8 @@ from heapq import heappush, heappop
 link1_length = 1.0
 link2_length = 1.0
 
-link1_initial_angle_deg = 30.0
-link2_initial_angle_deg = 45.0
+link1_initial_angle_deg = -60.0
+link2_initial_angle_deg = 75.0
 
 target_x = 1.0
 target_y = 0.5
@@ -619,6 +619,14 @@ def update_plot(value=None, record_trail=True):
 
     trail.set_data(tip_x_history, tip_y_history)
 
+    if link1_angle_deg is not None and link2_angle_deg is not None:
+        arm_current_pose_marker.set_data(
+            [link1_angle_deg],
+            [link2_angle_deg]
+        )
+
+    grid_fig.canvas.draw_idle()
+
     error_x = target_x - link2_tip_x
     error_y = target_y - link2_tip_y
     distance = np.sqrt(error_x ** 2 + error_y ** 2)
@@ -626,7 +634,7 @@ def update_plot(value=None, record_trail=True):
     ax.set_title(f"Distance to target: {distance:.3f} m")
     fig.canvas.draw_idle()
 
-def refresh_grid(target_x, target_y):
+def refresh_grid(target_x, target_y, link1_angle_deg=None, link2_angle_deg=None):
     '''Update the collision-map markers for both target IK solutions.
 
     Args:
@@ -669,6 +677,12 @@ def refresh_grid(target_x, target_y):
         )
     else:
         target_marker2_coll_map.set_data([], [])
+
+    if link1_angle_deg is not None and link2_angle_deg is not None:
+        arm_current_pose_marker.set_data(
+            [link1_angle_deg],
+            [link2_angle_deg]
+        )
 
     grid_fig.canvas.draw_idle()
 
@@ -817,6 +831,8 @@ def reach_target(event):
         link1_angle_deg, link2_angle_deg = current_solution
 
         set_joint_angles(link1_angle_deg, link2_angle_deg)
+
+        refresh_grid(target_x, target_y, link1_angle_deg, link2_angle_deg)
         if progress >= 1.0:
             motion_timer.stop()
 
@@ -1027,10 +1043,7 @@ plan_button.on_clicked(preview_route)
 
 fig.canvas.mpl_connect("button_press_event", choose_target)
 
-
 # DRAW THE INITIAL STATE AND SHOW PLOT
-
-update_plot()
 
 grid_step_deg = 2
 angle_values = np.arange(-180, 181, grid_step_deg)
@@ -1077,11 +1090,17 @@ target_marker2_coll_map, = grid_ax.plot(
     markeredgewidth=3
 )
 
+arm_current_pose_marker, = grid_ax.plot(
+    [],[], "bo",
+    markersize=8,
+    markeredgewidth=2
+)
+
 # Reuse this line when displaying each new planned route.
 grid_route, = grid_ax.plot(
     [], [], "o-",
     color="lime",
     markersize=3
 )
-
+update_plot()
 plt.show()
