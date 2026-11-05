@@ -760,6 +760,102 @@ def set_joint_angles(link1_angle_deg, link2_angle_deg):
 
     update_plot()
 
+def animate_route(route_link1, route_link2, segment_duration_s=0.3):
+    '''
+    Animate a joint-space route using smooth interpolation.
+    Args:
+        route_link1: Link 1 waypoint angles in degrees.
+        route_link2: Matching link 2 waypoint angles in degrees.
+        segment_duration_s: Seconds per waypoint-to-waypoint move.
+
+    Returns:
+        None.
+
+    Notes:
+        Uses smooth interpolation along each checked joint-space edge.
+        Both lists must have equal lengths.
+    '''
+    global motion_timer
+
+    # Stop an earlier animation.
+    if motion_timer is not None:
+        motion_timer.stop()
+
+    if len(route_link1) != len(route_link2):
+        raise ValueError("Both angle lists must have equal lengths.")
+
+    if segment_duration_s <= 0:
+        raise ValueError("Movement duration must be positive.")
+
+    # Pair the joint angles and remove consecutive duplicates.
+    waypoints = []
+
+    for pose in zip(route_link1, route_link2):
+        if not waypoints or pose != waypoints[-1]:
+            waypoints.append(pose)
+
+    if len(waypoints) < 2:
+        return
+
+    # Recheck every connection before starting.
+    for start_pose, end_pose in zip(waypoints[:-1], waypoints[1:]):
+        if not is_joint_motion_clear(
+                start_pose, end_pose,
+            link1_length, link2_length, obstacles
+        ):
+            ax.set_title("Route rejected: a connection collides.")
+            fig.canvas.draw_idle()
+            return
+
+    segment_index = 0 # Current segment between waypoints. ._._._._. '_ is the current segment'
+    segment_start_time = perf_counter() # Time when the current segment began.
+    timer = fig.canvas.new_timer(interval=30)
+
+    def animate_step():
+        '''
+        Advance one animation frame using elapsed time and joint-space interpolation.
+
+        Args:
+            None.
+
+        Returns:
+            None.
+
+        Notes:
+            Advances one frame and switches segments at each waypoint.
+        '''
+        nonlocal segment_index, segment_start_time
+
+        start_pose = waypoints[segment_index]
+        end_pose = waypoints[segment_index + 1] # end pose is the next waypoint because we are moving from the current waypoint to the next one
+
+        # Calculate progress for this segment.
+        elapsed_s = perf_counter() - segment_start_time
+        progress = min(elapsed_s / segment_duration_s, 1.0)
+        smooth = smooth_progress(progress)
+
+        link1_angle_deg = interpolate_angle(
+            start_pose[0], end_pose[0], smooth
+        )
+        link2_angle_deg = interpolate_angle(
+            start_pose[1], end_pose[1], smooth
+        )
+
+        set_joint_angles(link1_angle_deg, link2_angle_deg)
+
+        if progress >= 1.0:
+            # Advance after drawing the exact waypoint.
+            segment_index += 1
+
+            if segment_index >= len(waypoints) - 1:
+                timer.stop()
+            else:
+                segment_start_time = perf_counter()
+
+    timer.add_callback(animate_step)
+    motion_timer = timer
+    timer.start()
+
 def reach_target(event):
     '''Validate and animate a straight end-effector path to the target.
 
@@ -923,6 +1019,23 @@ def choose_target(event):
     # Refresh the distance display without adding a trail point.
     update_plot(record_trail=False)
 
+def manual_joint_change(value):
+    '''
+    Handle a slider change by stopping any automatic movement and redrawing.
+    Args:
+        value: New value supplied by the changed slider.
+
+    Returns:
+        None.
+
+    Notes:
+        Manual control cancels automatic movement.
+    '''
+    if motion_timer is not None:
+        motion_timer.stop()
+
+    update_plot(value)
+
 def preview_route(event):
     '''Find and display an A* route on the joint-angle collision map.
 
@@ -1033,6 +1146,9 @@ def preview_route(event):
     ax.set_title("Grid route preview ready.")
     fig.canvas.draw_idle()
 
+    # Follow the complete route, including exact endpoints.
+    animate_route(route_link1, route_link2)
+
 #   THE FIGURE AND PLOTTED OBJECTS
 
 fig, ax = plt.subplots()
@@ -1107,13 +1223,13 @@ plan_area = fig.add_axes([0.02, 0.01, 0.19, 0.04])
 reach_button = Button(reach_area, "Reach target")
 flip_button = Button(flip_area, "Flip link 2")
 clear_button = Button(clear_area, "Clear trail")
-plan_button = Button(plan_area, "Plan route")
+plan_button = Button(plan_area, "Plan & Move")
 
 
 # CONNECT EVENTS
 
-link1_slider.on_changed(update_plot)
-link2_slider.on_changed(update_plot)
+link1_slider.on_changed(manual_joint_change)
+link2_slider.on_changed(manual_joint_change)
 
 reach_button.on_clicked(reach_target)
 flip_button.on_clicked(flip_link2)
