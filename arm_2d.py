@@ -614,6 +614,74 @@ def find_path(
 
     return None
 
+def simplify_route(
+    route_link1, route_link2,
+    link1_length, link2_length, obstacles
+):
+    '''
+    Shorten a joint-angle route using collision-checked shortcuts.
+
+    Args:
+        route_link1: Link 1 waypoint angles in degrees.
+        route_link2: Matching link 2 waypoint angles in degrees.
+        link1_length: Length of link 1 in metres.
+        link2_length: Length of link 2 in metres.
+        obstacles: List of circular obstacle dictionaries.
+
+    Returns:
+        Two lists containing the simplified joint-angle route.
+
+    Notes:
+        Preserves the exact first and last poses.
+        Uses sampled collision checks, not a continuous guarantee.
+        Does not guarantee the globally shortest route.
+    '''
+    if len(route_link1) != len(route_link2):
+        raise ValueError("Both angle lists must have equal lengths.")
+
+    waypoints = list(zip(route_link1, route_link2))
+
+    if len(waypoints) < 2:
+        return list(route_link1), list(route_link2)
+
+    simplified = [waypoints[0]]
+    current_index = 0
+
+    while current_index < len(waypoints) - 1:
+        next_index = None
+
+        # Try the farthest remaining waypoint first.
+        for candidate_index in range(
+            len(waypoints) - 1, current_index, -1
+        ):
+            clear = is_joint_motion_clear(
+                waypoints[current_index],
+                waypoints[candidate_index],
+                link1_length,
+                link2_length,
+                obstacles
+            )
+
+            if clear:
+                next_index = candidate_index
+                break
+
+        if next_index is None:
+            raise ValueError("The input route has a blocked connection.")
+
+        # Keep the farthest waypoint we can reach directly.
+        simplified.append(waypoints[next_index])
+        current_index = next_index
+
+    simplified_link1 = []
+    simplified_link2 = []
+
+    for link1_angle, link2_angle in simplified:
+        simplified_link1.append(link1_angle)
+        simplified_link2.append(link2_angle)
+
+    return simplified_link1, simplified_link2
+
 # EVENT CALLBACK FUNCTIONS
 
 def update_plot(value=None, record_trail=True):
@@ -1141,8 +1209,21 @@ def preview_route(event):
     route_link1.append(exact_goal[0])
     route_link2.append(exact_goal[1])
 
+    # Count waypoints before removing unnecessary ones.
+    original_count = len(route_link1)
+
+    route_link1, route_link2 = simplify_route(
+        route_link1,
+        route_link2,
+        link1_length,
+        link2_length,
+        obstacles
+    )
+
+    print(f"Waypoints: {original_count} → {len(route_link1)}")
+
     grid_route.set_data(route_link1, route_link2)
-    grid_ax.set_title(f"Grid route: {len(path) - 1} moves")
+    grid_ax.set_title( f"Simplified route: {len(route_link1) - 1} segments" )
     grid_fig.canvas.draw_idle()
 
     ax.set_title("Grid route preview ready.")
@@ -1242,7 +1323,7 @@ fig.canvas.mpl_connect("button_press_event", choose_target)
 
 # DRAW THE INITIAL STATE AND SHOW PLOT
 
-grid_step_deg = 5
+grid_step_deg = 10
 angle_values = np.arange(-180, 181, grid_step_deg)
 
 collision_grid = build_collision_grid(
