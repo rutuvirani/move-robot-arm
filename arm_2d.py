@@ -531,6 +531,72 @@ def is_joint_motion_clear(
 
     return True
 
+def find_connected_cell(
+    pose, angle_values, collision_grid,
+    link1_length, link2_length, obstacles,
+    search_radius=2
+):
+    '''
+    Find a nearby free grid cell connected to an exact joint pose.
+
+    Args:
+        pose: Exact (link1, link2) angles in degrees.
+        angle_values: Joint angles represented by the grid.
+        collision_grid: Boolean array; True means collision.
+        link1_length: Link 1 length in metres.
+        link2_length: Link 2 length in metres.
+        obstacles: List of circular obstacle dictionaries.
+        search_radius: Number of cells to search in each direction.
+
+    Returns:
+        A (row, column) tuple, or None if no connection is found.
+
+    Notes:
+        Tests candidates from closest to farthest in joint-angle space.
+        Connections use sampled collision checks.
+        A valid connection does not guarantee a route to the goal.
+    '''
+    center_row, center_column = angles_to_cell(
+        pose[0], pose[1], angle_values
+    )
+
+    row_count, column_count = collision_grid.shape
+    candidates = []
+
+    # Search a square around the nearest cell.
+    for row in range(
+        max(0, center_row - search_radius),
+        min(row_count, center_row + search_radius + 1)
+    ):
+        for column in range(
+            max(0, center_column - search_radius),
+            min(column_count, center_column + search_radius + 1)
+        ):
+            if collision_grid[row, column]:
+                continue
+
+            # Squared angular distance avoids an unnecessary square root.
+            distance_squared = (
+                (angle_values[column] - pose[0]) ** 2
+                + (angle_values[row] - pose[1]) ** 2
+            )
+
+            candidates.append((distance_squared, row, column))
+
+    # Tuples sort by their first value, then by later values for ties.
+    candidates.sort()
+
+    for _, row, column in candidates:
+        grid_pose = (angle_values[column], angle_values[row])
+
+        if is_joint_motion_clear(
+            pose, grid_pose,
+            link1_length, link2_length, obstacles
+        ):
+            return row, column
+
+    return None
+
 def find_path(
     start_cell,
     goal_cell,
@@ -1324,13 +1390,25 @@ def preview_route(event):
 
     link1_goal_deg, link2_goal_deg = solution
 
-    # Snap current and target angles to the discrete planning grid.
-    start_cell = angles_to_cell(
-        link1_slider.val, link2_slider.val, angle_values
+    # Capture the exact configurations.
+    exact_start = (link1_slider.val, link2_slider.val)
+    exact_goal = (link1_goal_deg, link2_goal_deg)
+
+    # Find nearby cells with clear connecting movements.
+    start_cell = find_connected_cell(
+        exact_start, angle_values, collision_grid,
+        link1_length, link2_length, obstacles
     )
-    goal_cell = angles_to_cell(
-        link1_goal_deg, link2_goal_deg, angle_values
+
+    goal_cell = find_connected_cell(
+        exact_goal, angle_values, collision_grid,
+        link1_length, link2_length, obstacles
     )
+
+    if start_cell is None or goal_cell is None:
+        ax.set_title("No clear connection to nearby grid cells.")
+        fig.canvas.draw_idle()
+        return
 
     path = find_path(
         start_cell,
