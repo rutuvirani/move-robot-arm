@@ -24,6 +24,10 @@ tip_y_history = []
 motion_timer = None
 movement_duration_s = 6.0
 
+# speed limits of the joints in degrees per second
+link1_max_speed_deg_s = 45.0
+link2_max_speed_deg_s = 45.0
+
 obstacles = [
     {"center_x": 0.8, "center_y": 0.7, "radius": 0.2},
     {"center_x": -0.6, "center_y": 0.9, "radius": 0.15}
@@ -682,6 +686,50 @@ def simplify_route(
 
     return simplified_link1, simplified_link2
 
+def calculate_segment_duration(
+    start_pose, end_pose,
+    link1_max_speed_deg_s, link2_max_speed_deg_s
+):
+    '''
+    Calculate a shared duration that limits both joints' peak speeds.
+
+    Args:
+        start_pose: Starting (link1, link2) angles in degrees.
+        end_pose: Ending (link1, link2) angles in degrees.
+        link1_max_speed_deg_s: Positive link 1 speed limit.
+        link2_max_speed_deg_s: Positive link 2 speed limit.
+
+    Returns:
+        Segment duration in seconds, with a minimum of 0.1 seconds.
+
+    Notes:
+        The factor 1.5 applies to cubic smoothstep: 3s² - 2s³.
+        Limits planned joint speed, not acceleration.
+    '''
+
+    # Cubic smoothstep starts and ends at rest, reaching its peak speed halfway.
+    # Peak speed = 1.5 * abs(angle_change) / duration. so, duration >= 1.5 * abs(angle_change) / max_speed.
+    # Calculate this minimum duration for each joint, then use the larger one
+    # so both joints finish together without exceeding either speed limit.
+    # Angle changes are in degrees and speed limits in degrees/second, so the calculated duration is in seconds.
+    if link1_max_speed_deg_s <= 0 or link2_max_speed_deg_s <= 0:
+        raise ValueError("Speed limits must be positive.")
+
+    # Calculate how far each joint rotates.
+    link1_change_deg = abs(end_pose[0] - start_pose[0])
+    link2_change_deg = abs(end_pose[1] - start_pose[1])
+
+    # Allow for smoothstep's peak speed.
+    link1_duration_s = (
+        1.5 * link1_change_deg / link1_max_speed_deg_s
+    )
+    link2_duration_s = (
+        1.5 * link2_change_deg / link2_max_speed_deg_s
+    )
+
+    # Give both joints enough time.
+    return max(link1_duration_s, link2_duration_s, 0.1)
+
 # EVENT CALLBACK FUNCTIONS
 
 def update_plot(value=None, record_trail=True):
@@ -830,20 +878,20 @@ def set_joint_angles(link1_angle_deg, link2_angle_deg):
 
     update_plot()
 
-def animate_route(route_link1, route_link2, segment_duration_s=0.3):
+def animate_route(route_link1, route_link2):
     '''
     Animate a joint-space route using smooth interpolation.
     Args:
         route_link1: Link 1 waypoint angles in degrees.
         route_link2: Matching link 2 waypoint angles in degrees.
-        segment_duration_s: Seconds per waypoint-to-waypoint move.
 
     Returns:
         None.
 
     Notes:
         Uses smooth interpolation along each checked joint-space edge.
-        Both lists must have equal lengths.
+        Both lists must have equal lengths. 
+        Each segment's duration is calculated from the joint speed limits.
     '''
     global motion_timer
 
@@ -853,9 +901,6 @@ def animate_route(route_link1, route_link2, segment_duration_s=0.3):
 
     if len(route_link1) != len(route_link2):
         raise ValueError("Both angle lists must have equal lengths.")
-
-    if segment_duration_s <= 0:
-        raise ValueError("Movement duration must be positive.")
 
     # Pair the joint angles and remove consecutive duplicates.
     waypoints = []
@@ -876,6 +921,20 @@ def animate_route(route_link1, route_link2, segment_duration_s=0.3):
             ax.set_title("Route rejected: a connection collides.")
             fig.canvas.draw_idle()
             return
+
+    # Calculate one duration for each consecutive pair of waypoints.
+    segment_durations = []
+
+    for start_pose, end_pose in zip(waypoints[:-1], waypoints[1:]):
+        duration_s = calculate_segment_duration(
+            start_pose,
+            end_pose,
+            link1_max_speed_deg_s,
+            link2_max_speed_deg_s
+        )
+        segment_durations.append(duration_s)
+
+    print(f"Planned movement time: {sum(segment_durations):.2f} s")
 
     segment_index = 0 # Current segment between waypoints. ._._._._. '_ is the current segment'
     segment_start_time = perf_counter() # Time when the current segment began.
@@ -901,7 +960,9 @@ def animate_route(route_link1, route_link2, segment_duration_s=0.3):
 
         # Calculate progress for this segment.
         elapsed_s = perf_counter() - segment_start_time
-        progress = min(elapsed_s / segment_duration_s, 1.0)
+        # Use the duration belonging to this segment.
+        duration_s = segment_durations[segment_index]
+        progress = min(elapsed_s / duration_s, 1.0)
         smooth = smooth_progress(progress)
 
         link1_angle_deg = interpolate_angle(
