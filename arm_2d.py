@@ -181,16 +181,24 @@ def interpolate_angle(start_angle_deg, end_angle_deg, progress):
     return angle_deg
 
 def smooth_progress(progress):
-    '''Apply cubic easing to a movement's progress.
+    '''
+    Convert time progress into motion with gentle starts and stops.
 
     Args:
-        progress (float): Linear progress from 0 to 1.
+        progress: Fraction of segment time elapsed, between 0 and 1.
 
     Returns:
-        float: Eased progress using 3s^2 - 2s^3, with zero slope at
-            both endpoints. Input values are not clamped.
+        Smoothed position progress between 0 and 1.
+
+    Notes:
+        Uses quintic smoothstep.
+        Velocity and acceleration are zero at both endpoints.
+        Does not remove the stop at each waypoint.
     '''
-    return 3 * progress ** 2 - 2 * progress ** 3
+    # Keep progress within the segment.
+    s = np.clip(progress, 0.0, 1.0)
+
+    return 10 * s ** 3 - 15 * s ** 4 + 6 * s ** 5
 
 def segment_hits_circle(
     start_x, start_y, end_x, end_y, obstacle, clearance=0.06
@@ -710,16 +718,10 @@ def calculate_segment_duration(
         Shared segment duration in seconds, at least 0.1 seconds.
 
     Notes:
-        Assumes cubic smoothstep with zero endpoint velocities.
-        Peak speed is 1.5 * angle_change / duration.
-        Peak acceleration is 6 * angle_change / duration².
-        Acceleration can still jump at segment boundaries.
-        # Cubic smoothstep starts and ends at rest, reaching its peak speed halfway.
-        # Peak speed = 1.5 * abs(angle_change) / duration. so, duration >= 1.5 * abs(angle_change) / max_speed.
-        # Calculate this minimum duration for each joint, then use the larger one
-        # so both joints finish together without exceeding either speed limit.
-        # Angle changes are in degrees and speed limits in degrees/second, so the calculated duration is in seconds.
-  
+        Assumes quintic smoothstep.
+        Peak speed is 1.875 * angle_change / duration.
+        Peak acceleration is (10 / sqrt(3)) * angle_change / duration².
+        Velocity and acceleration are zero at segment endpoints.
     '''
     limits = (
         link1_max_speed_deg_s,
@@ -735,18 +737,25 @@ def calculate_segment_duration(
     link1_change = abs(end_pose[0] - start_pose[0])
     link2_change = abs(end_pose[1] - start_pose[1])
 
+    # Peak derivative factors for quintic smoothstep.
+    speed_factor = 1.875
+    accel_factor = 10 / np.sqrt(3)
+
     # Minimum durations required by the speed limits.
-    link1_speed_time = 1.5 * link1_change / link1_max_speed_deg_s
-    link2_speed_time = 1.5 * link2_change / link2_max_speed_deg_s
+    link1_speed_time = (
+        speed_factor * link1_change / link1_max_speed_deg_s
+    )
+    link2_speed_time = (
+        speed_factor * link2_change / link2_max_speed_deg_s
+    )
 
     # Minimum durations required by the acceleration limits.
     link1_accel_time = np.sqrt(
-        6 * link1_change / link1_max_accel_deg_s2
+        accel_factor * link1_change / link1_max_accel_deg_s2
     )
     link2_accel_time = np.sqrt(
-        6 * link2_change / link2_max_accel_deg_s2
+        accel_factor * link2_change / link2_max_accel_deg_s2
     )
-
     # The longest requirement determines the shared duration.
     return max(
         link1_speed_time,
