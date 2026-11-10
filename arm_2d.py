@@ -28,6 +28,10 @@ movement_duration_s = 6.0
 link1_max_speed_deg_s = 45.0
 link2_max_speed_deg_s = 45.0
 
+# Maximum planned joint acceleration in degrees per second squared.
+link1_max_accel_deg_s2 = 90.0
+link2_max_accel_deg_s2 = 90.0
+
 obstacles = [
     {"center_x": 0.8, "center_y": 0.7, "radius": 0.2},
     {"center_x": -0.6, "center_y": 0.9, "radius": 0.15}
@@ -688,47 +692,69 @@ def simplify_route(
 
 def calculate_segment_duration(
     start_pose, end_pose,
-    link1_max_speed_deg_s, link2_max_speed_deg_s
+    link1_max_speed_deg_s, link2_max_speed_deg_s,
+    link1_max_accel_deg_s2, link2_max_accel_deg_s2
 ):
     '''
-    Calculate a shared duration that limits both joints' peak speeds.
+    Choose a segment duration that respects speed and acceleration limits.
 
     Args:
         start_pose: Starting (link1, link2) angles in degrees.
         end_pose: Ending (link1, link2) angles in degrees.
         link1_max_speed_deg_s: Positive link 1 speed limit.
         link2_max_speed_deg_s: Positive link 2 speed limit.
+        link1_max_accel_deg_s2: Positive link 1 acceleration limit.
+        link2_max_accel_deg_s2: Positive link 2 acceleration limit.
 
     Returns:
-        Segment duration in seconds, with a minimum of 0.1 seconds.
+        Shared segment duration in seconds, at least 0.1 seconds.
 
     Notes:
-        The factor 1.5 applies to cubic smoothstep: 3s² - 2s³.
-        Limits planned joint speed, not acceleration.
+        Assumes cubic smoothstep with zero endpoint velocities.
+        Peak speed is 1.5 * angle_change / duration.
+        Peak acceleration is 6 * angle_change / duration².
+        Acceleration can still jump at segment boundaries.
+        # Cubic smoothstep starts and ends at rest, reaching its peak speed halfway.
+        # Peak speed = 1.5 * abs(angle_change) / duration. so, duration >= 1.5 * abs(angle_change) / max_speed.
+        # Calculate this minimum duration for each joint, then use the larger one
+        # so both joints finish together without exceeding either speed limit.
+        # Angle changes are in degrees and speed limits in degrees/second, so the calculated duration is in seconds.
+  
     '''
-
-    # Cubic smoothstep starts and ends at rest, reaching its peak speed halfway.
-    # Peak speed = 1.5 * abs(angle_change) / duration. so, duration >= 1.5 * abs(angle_change) / max_speed.
-    # Calculate this minimum duration for each joint, then use the larger one
-    # so both joints finish together without exceeding either speed limit.
-    # Angle changes are in degrees and speed limits in degrees/second, so the calculated duration is in seconds.
-    if link1_max_speed_deg_s <= 0 or link2_max_speed_deg_s <= 0:
-        raise ValueError("Speed limits must be positive.")
-
-    # Calculate how far each joint rotates.
-    link1_change_deg = abs(end_pose[0] - start_pose[0])
-    link2_change_deg = abs(end_pose[1] - start_pose[1])
-
-    # Allow for smoothstep's peak speed.
-    link1_duration_s = (
-        1.5 * link1_change_deg / link1_max_speed_deg_s
-    )
-    link2_duration_s = (
-        1.5 * link2_change_deg / link2_max_speed_deg_s
+    limits = (
+        link1_max_speed_deg_s,
+        link2_max_speed_deg_s,
+        link1_max_accel_deg_s2,
+        link2_max_accel_deg_s2
     )
 
-    # Give both joints enough time.
-    return max(link1_duration_s, link2_duration_s, 0.1)
+    if min(limits) <= 0:
+        raise ValueError("Speed and acceleration limits must be positive.")
+
+    # Absolute rotation required from each joint.
+    link1_change = abs(end_pose[0] - start_pose[0])
+    link2_change = abs(end_pose[1] - start_pose[1])
+
+    # Minimum durations required by the speed limits.
+    link1_speed_time = 1.5 * link1_change / link1_max_speed_deg_s
+    link2_speed_time = 1.5 * link2_change / link2_max_speed_deg_s
+
+    # Minimum durations required by the acceleration limits.
+    link1_accel_time = np.sqrt(
+        6 * link1_change / link1_max_accel_deg_s2
+    )
+    link2_accel_time = np.sqrt(
+        6 * link2_change / link2_max_accel_deg_s2
+    )
+
+    # The longest requirement determines the shared duration.
+    return max(
+        link1_speed_time,
+        link2_speed_time,
+        link1_accel_time,
+        link2_accel_time,
+        0.1
+    )
 
 # EVENT CALLBACK FUNCTIONS
 
@@ -998,7 +1024,9 @@ def animate_route(route_link1, route_link2):
             start_pose,
             end_pose,
             link1_max_speed_deg_s,
-            link2_max_speed_deg_s
+            link2_max_speed_deg_s,
+            link1_max_accel_deg_s2,
+            link2_max_accel_deg_s2
         )
         segment_durations.append(duration_s)
 
