@@ -877,6 +877,74 @@ def set_joint_angles(link1_angle_deg, link2_angle_deg):
     link2_slider.eventson = True
 
     update_plot()
+def plot_joint_motion(times_s, link1_angles_deg, link2_angles_deg):
+    '''
+    Plot recorded joint angles and estimated velocities.
+
+    Args:
+        times_s: Recording times in seconds.
+        link1_angles_deg: Link 1 angles at those times.
+        link2_angles_deg: Link 2 angles at those times.
+
+    Returns:
+        None.
+
+    Notes:
+        Velocity is estimated between consecutive samples.
+        These are displayed command angles, not motor measurements.
+    '''
+    if len(times_s) < 2:
+        return
+
+    # Find changes between consecutive samples.
+    time_steps = np.diff(times_s)
+    link1_changes = np.diff(link1_angles_deg)
+    link2_changes = np.diff(link2_angles_deg)
+
+    # Ignore any repeated timestamps.
+    valid = time_steps > 0
+    link1_velocity = link1_changes[valid] / time_steps[valid]
+    link2_velocity = link2_changes[valid] / time_steps[valid]
+
+    # Place each velocity estimate halfway between its samples.
+    times = np.asarray(times_s)
+    velocity_times = ((times[:-1] + times[1:]) / 2)[valid]
+
+    motion_fig, motion_axes = plt.subplots(2, 1, sharex=True)
+
+    # Top graph: joint angles.
+    motion_axes[0].plot(times, link1_angles_deg, label="Link 1")
+    motion_axes[0].plot(times, link2_angles_deg, label="Link 2")
+    motion_axes[0].set_ylabel("Angle (°)")
+
+    # Bottom graph: estimated joint velocities.
+    motion_axes[1].plot(
+        velocity_times, link1_velocity, label="Link 1", color="tab:blue"
+    )
+    motion_axes[1].plot(
+        velocity_times, link2_velocity, label="Link 2", color="tab:orange"
+    )
+
+    # Show positive and negative speed limits.
+    for sign in [-1, 1]:
+        motion_axes[1].axhline(
+            sign * link1_max_speed_deg_s,
+            color="tab:blue", linestyle="--", alpha=0.5
+        )
+        motion_axes[1].axhline(
+            sign * link2_max_speed_deg_s,   
+            color="tab:orange", linestyle=":", alpha=0.5
+        )
+
+    motion_axes[1].set_ylabel("Velocity (°/s)")
+    motion_axes[1].set_xlabel("Time (s)")
+
+    for axis in motion_axes:
+        axis.grid(True)
+        axis.legend()
+
+    motion_fig.tight_layout()
+    motion_fig.show()
 
 def animate_route(route_link1, route_link2):
     '''
@@ -936,8 +1004,15 @@ def animate_route(route_link1, route_link2):
 
     print(f"Planned movement time: {sum(segment_durations):.2f} s")
 
-    segment_index = 0 # Current segment between waypoints. ._._._._. '_ is the current segment'
-    segment_start_time = perf_counter() # Time when the current segment began.
+    # Use one clock origin for the complete route.
+    route_start_time = perf_counter()
+    segment_start_time = route_start_time
+    segment_index = 0
+
+    # Include the initial pose.
+    recorded_times_s = [0.0]
+    recorded_link1_deg = [waypoints[0][0]]
+    recorded_link2_deg = [waypoints[0][1]]
     timer = fig.canvas.new_timer(interval=30)
 
     def animate_step():
@@ -959,7 +1034,9 @@ def animate_route(route_link1, route_link2):
         end_pose = waypoints[segment_index + 1] # end pose is the next waypoint because we are moving from the current waypoint to the next one
 
         # Calculate progress for this segment.
-        elapsed_s = perf_counter() - segment_start_time
+        # Use the same timestamp for calculation and recording.
+        now = perf_counter()
+        elapsed_s = now - segment_start_time
         # Use the duration belonging to this segment.
         duration_s = segment_durations[segment_index]
         progress = min(elapsed_s / duration_s, 1.0)
@@ -972,6 +1049,10 @@ def animate_route(route_link1, route_link2):
             start_pose[1], end_pose[1], smooth
         )
 
+        # Save the angles calculated for this frame.
+        recorded_times_s.append(now - route_start_time)
+        recorded_link1_deg.append(link1_angle_deg)
+        recorded_link2_deg.append(link2_angle_deg)
         set_joint_angles(link1_angle_deg, link2_angle_deg)
 
         if progress >= 1.0:
@@ -980,6 +1061,11 @@ def animate_route(route_link1, route_link2):
 
             if segment_index >= len(waypoints) - 1:
                 timer.stop()
+                plot_joint_motion(
+                    recorded_times_s,
+                    recorded_link1_deg,
+                    recorded_link2_deg
+                )
             else:
                 segment_start_time = perf_counter()
 
