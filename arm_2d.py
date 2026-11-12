@@ -37,6 +37,9 @@ obstacles = [
     {"center_x": -0.6, "center_y": 0.9, "radius": 0.15}
 ]
 
+# Extra distance maintained around each obstacle, in metres.
+obstacle_clearance = 0.06
+
 # CALCULATIONS
 def straight_line_points(start_x, start_y, end_x, end_y, count=61):
     '''Generate evenly spaced points along a straight line.
@@ -201,7 +204,7 @@ def smooth_progress(progress):
     return 10 * s ** 3 - 15 * s ** 4 + 6 * s ** 5
 
 def segment_hits_circle(
-    start_x, start_y, end_x, end_y, obstacle, clearance=0.06
+    start_x, start_y, end_x, end_y, obstacle, clearance=obstacle_clearance
 ):
     '''Check whether a line segment touches an obstacle's clearance region.
 
@@ -831,6 +834,43 @@ def calculate_segment_duration(
         0.1
     )
 
+def draw_obstacle_clearance(ax, obstacles, clearance):
+    '''
+    Draw the extra collision boundary around each obstacle.
+
+    Args:
+        ax: Matplotlib axes containing the robot arm.
+        obstacles: List of circular obstacle dictionaries.
+        clearance: Extra collision distance in metres.
+
+    Returns:
+        None.
+
+    Notes:
+        Draws boundaries only; it does not perform collision checks.
+        Call once when setting up the plot.
+    '''
+    for index, obstacle in enumerate(obstacles):
+        center = (
+            obstacle["center_x"],
+            obstacle["center_y"]
+        )
+
+        # Match the enlarged radius used by collision checking.
+        checked_radius = obstacle["radius"] + clearance
+
+        boundary = Circle(
+            center,
+            checked_radius,
+            fill=False,
+            edgecolor="crimson",
+            linestyle="--",
+            linewidth=1.2,
+            label="Clearance boundary" if index == 0 else "_nolegend_"
+        )
+
+        ax.add_patch(boundary)
+
 # EVENT CALLBACK FUNCTIONS
 
 def update_plot(value=None, record_trail=True):
@@ -1356,6 +1396,44 @@ def manual_joint_change(value):
 
     update_plot(value)
 
+def estimate_route_duration(route_link1, route_link2):
+    '''
+    Estimate the movement time for a joint-angle route.
+
+    Args:
+        route_link1: Link1 angles at each waypoint, in degrees.
+        route_link2: Link2 angles at each waypoint, in degrees.
+
+    Returns:
+        Estimated total movement time in seconds.
+
+    Notes:
+        Uses the current global speed and acceleration limits.
+        Assumes the arm stops at each waypoint.
+        Excludes GUI timer delays.
+    '''
+    if len(route_link1) != len(route_link2):
+        raise ValueError("Both angle lists must have equal lengths.")
+
+    poses = list(zip(route_link1, route_link2))
+    total_duration_s = 0.0
+
+    for start_pose, end_pose in zip(poses[:-1], poses[1:]):
+        # Repeated poses require no movement.
+        if start_pose == end_pose:
+            continue
+
+        total_duration_s += calculate_segment_duration(
+            start_pose,
+            end_pose,
+            link1_max_speed_deg_s,
+            link2_max_speed_deg_s,
+            link1_max_accel_deg_s2,
+            link2_max_accel_deg_s2
+        )
+
+    return total_duration_s
+
 def plan_target_route(
     start_pose,
     target_x,
@@ -1367,7 +1445,7 @@ def plan_target_route(
     obstacles
 ):
     '''
-    Try both elbow configurations and choose a valid joint-space route.
+    Try both elbow configurations and select the faster candidate route.
 
     Args:
         start_pose: Current (link1, link2) angles in degrees.
@@ -1383,7 +1461,7 @@ def plan_target_route(
         A tuple (path, goal_pose, bend_sign), or None if planning fails.
 
     Notes:
-        Compares routes using total absolute joint-angle change.
+        Compares estimated movement time after route simplification.
         Uses one nearby grid connection for each exact pose.
         Collision checks are sampled, not continuous guarantees.
     '''
@@ -1437,14 +1515,28 @@ def plan_target_route(
 
         poses.append(goal_pose)
 
-        # Add how far each joint travels.
-        route_cost = 0.0
+        # Separate the two joints into angle lists.
+        route_link1 = [pose[0] for pose in poses]
+        route_link2 = [pose[1] for pose in poses]
 
-        for start, end in zip(poses[:-1], poses[1:]):
-            route_cost += (
-                abs(end[0] - start[0])
-                + abs(end[1] - start[1])
-            )
+        # Evaluate the route after removing unnecessary waypoints.
+        route_link1, route_link2 = simplify_route(
+            route_link1,
+            route_link2,
+            link1_length,
+            link2_length,
+            obstacles
+        )
+
+        route_cost = estimate_route_duration(
+            route_link1,
+            route_link2
+        )
+
+        print(
+            f"Elbow {bend_sign:+d}: "
+            f"estimated movement time = {route_cost:.2f} s"
+        )
 
         if route_cost < best_cost:
             best_cost = route_cost
@@ -1564,6 +1656,14 @@ for obstacle in obstacles:
     )
 
     ax.add_patch(obstacle_patch)
+
+draw_obstacle_clearance(
+    ax,
+    obstacles,
+    obstacle_clearance
+)
+
+ax.legend(loc="upper right")
 
 arm, = ax.plot(
     [], [], "o-",
