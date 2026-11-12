@@ -1018,6 +1018,7 @@ def set_joint_angles(link1_angle_deg, link2_angle_deg):
     link2_slider.eventson = True
 
     update_plot()
+
 def plot_joint_motion(times_s, link1_angles_deg, link2_angles_deg):
     '''
     Plot recorded joint angles and estimated velocities.
@@ -1353,6 +1354,29 @@ def flip_link2(event):
     link2_bend_sign = -link2_bend_sign
     reach_target(event)
 
+def stop_motion(event):
+    '''
+    Stop the current animation and keep the arm at its current pose.
+
+    Args:
+        event: Matplotlib button-click event; unused.
+
+    Returns:
+        None.
+
+    Notes:
+        Stops the animation timer without resetting joint angles.
+        A new plan can start from the current slider values.
+    '''
+    global motion_timer
+
+    # There may be no active animation.
+    if motion_timer is not None:
+        motion_timer.stop()
+        motion_timer = None
+
+    ax.set_title("Movement stopped. Choose a target and plan again.")
+    fig.canvas.draw_idle()
 
 def choose_target(event):
     '''Set a new target from a left click inside the arm plot.
@@ -1644,7 +1668,7 @@ def preview_route(event):
 #   THE FIGURE AND PLOTTED OBJECTS
 plt.ioff()
 fig, ax = plt.subplots()
-fig.subplots_adjust(bottom=0.30)
+fig.subplots_adjust(bottom=0.38)
 
 for obstacle in obstacles:
     obstacle_patch = Circle(
@@ -1719,11 +1743,13 @@ reach_area = fig.add_axes([0.25, 0.01, 0.25, 0.04])
 flip_area = fig.add_axes([0.53, 0.01, 0.22, 0.04])
 clear_area = fig.add_axes([0.78, 0.01, 0.18, 0.04])
 plan_area = fig.add_axes([0.02, 0.01, 0.19, 0.04])
+stop_area = fig.add_axes([0.25, 0.25, 0.20, 0.05])
 
 reach_button = Button(reach_area, "Reach target")
 flip_button = Button(flip_area, "Flip link 2")
 clear_button = Button(clear_area, "Clear trail")
 plan_button = Button(plan_area, "Plan & Move")
+stop_button = Button( stop_area, "Stop", color="mistyrose", hovercolor="salmon" )
 
 
 # CONNECT EVENTS
@@ -1735,6 +1761,7 @@ reach_button.on_clicked(reach_target)
 flip_button.on_clicked(flip_link2)
 clear_button.on_clicked(clear_trail)
 plan_button.on_clicked(preview_route)
+stop_button.on_clicked(stop_motion)
 
 fig.canvas.mpl_connect("button_press_event", choose_target)
 
