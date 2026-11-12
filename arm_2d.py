@@ -1356,6 +1356,102 @@ def manual_joint_change(value):
 
     update_plot(value)
 
+def plan_target_route(
+    start_pose,
+    target_x,
+    target_y,
+    angle_values,
+    collision_grid,
+    link1_length,
+    link2_length,
+    obstacles
+):
+    '''
+    Try both elbow configurations and choose a valid joint-space route.
+
+    Args:
+        start_pose: Current (link1, link2) angles in degrees.
+        target_x: Target x coordinate in metres.
+        target_y: Target y coordinate in metres.
+        angle_values: Joint angles represented by the grid.
+        collision_grid: Boolean grid; True means collision.
+        link1_length: Length of link1 in metres.
+        link2_length: Length of link2 in metres.
+        obstacles: List of circular obstacles.
+
+    Returns:
+        A tuple (path, goal_pose, bend_sign), or None if planning fails.
+
+    Notes:
+        Compares routes using total absolute joint-angle change.
+        Uses one nearby grid connection for each exact pose.
+        Collision checks are sampled, not continuous guarantees.
+    '''
+    start_cell = find_connected_cell(
+        start_pose, angle_values, collision_grid,
+        link1_length, link2_length, obstacles
+    )
+
+    if start_cell is None:
+        print('start_cell is none')
+        return None
+
+    best_result = None
+    best_cost = float("inf")
+
+    # Try the two possible elbow configurations.
+    for bend_sign in (1, -1):
+        goal_pose = inverse_kinematics(
+            link1_length, link2_length,
+            target_x, target_y, bend_sign
+        )
+
+        if goal_pose is None:
+            continue
+
+        goal_cell = find_connected_cell(
+            goal_pose, angle_values, collision_grid,
+            link1_length, link2_length, obstacles
+        )
+
+        if goal_cell is None:
+            continue
+
+        path = find_path(
+            start_cell, goal_cell,
+            collision_grid, angle_values,
+            link1_length, link2_length, obstacles
+        )
+
+        if path is None:
+            continue
+
+        # Include the exact start and target poses.
+        poses = [start_pose]
+
+        for row, column in path:
+            poses.append((
+                angle_values[column],
+                angle_values[row]
+            ))
+
+        poses.append(goal_pose)
+
+        # Add how far each joint travels.
+        route_cost = 0.0
+
+        for start, end in zip(poses[:-1], poses[1:]):
+            route_cost += (
+                abs(end[0] - start[0])
+                + abs(end[1] - start[1])
+            )
+
+        if route_cost < best_cost:
+            best_cost = route_cost
+            best_result = (path, goal_pose, bend_sign)
+
+    return best_result
+
 def preview_route(event):
     '''Find and display an A* route on the joint-angle collision map.
 
@@ -1375,59 +1471,18 @@ def preview_route(event):
     grid_route.set_data([], [])
     grid_fig.canvas.draw_idle()
 
-    solution = inverse_kinematics(
-        link1_length,
-        link2_length,
-        target_x,
-        target_y,
-        link2_bend_sign
-    )
+    exact_start = (
+    link1_slider.val,
+    link2_slider.val
+)
 
-    if solution is None:
-        ax.set_title("Target is outside the arm's reach.")
-        fig.canvas.draw_idle()
-        return
-
-    link1_goal_deg, link2_goal_deg = solution
-
-    # Capture the exact configurations.
-    exact_start = (link1_slider.val, link2_slider.val)
-    exact_goal = (link1_goal_deg, link2_goal_deg)
-
-    # Find nearby cells with clear connecting movements.
-    start_cell = find_connected_cell(
-        exact_start, angle_values, collision_grid,
-        link1_length, link2_length, obstacles
-    )
-
-    goal_cell = find_connected_cell(
-        exact_goal, angle_values, collision_grid,
-        link1_length, link2_length, obstacles
-    )
-
-    if start_cell is None or goal_cell is None:
-        ax.set_title("No clear connection to nearby grid cells.")
-        fig.canvas.draw_idle()
-        return
-
-    path = find_path(
-        start_cell,
-        goal_cell,
-        collision_grid,
-        angle_values,
-        link1_length,
-        link2_length,
-        obstacles
-    )
+    path, exact_goal, bend_sign = plan_target_route(exact_start, target_x, target_y, angle_values, collision_grid, link1_length,link2_length, obstacles)
 
     if path is None:
         ax.set_title("No route found between the selected grid cells.")
         fig.canvas.draw_idle()
+        print('Path is none')
         return
-    
-    # Preserve the exact current and target configurations.
-    exact_start = (link1_slider.val, link2_slider.val)
-    exact_goal = (link1_goal_deg, link2_goal_deg)
 
     # Convert the route's endpoint cells into joint angles.
     start_row, start_column = path[0]
@@ -1495,7 +1550,7 @@ def preview_route(event):
     animate_route(route_link1, route_link2)
 
 #   THE FIGURE AND PLOTTED OBJECTS
-
+plt.ioff()
 fig, ax = plt.subplots()
 fig.subplots_adjust(bottom=0.30)
 
@@ -1643,4 +1698,4 @@ grid_route, = grid_ax.plot(
     markersize=3
 )
 update_plot()
-plt.show()
+plt.show(block=True)
