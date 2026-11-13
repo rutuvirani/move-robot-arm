@@ -1051,8 +1051,11 @@ def plot_joint_motion(times_s, link1_angles_deg, link2_angles_deg):
     # Place each velocity estimate halfway between its samples.
     times = np.asarray(times_s)
     velocity_times = ((times[:-1] + times[1:]) / 2)[valid]
+    acceleration_times = (
+        velocity_times[:-1] + velocity_times[1:]
+    ) / 2
 
-    motion_fig, motion_axes = plt.subplots(2, 1, sharex=True)
+    motion_fig, motion_axes = plt.subplots(3, 1, sharex=True)
 
     # Top graph: joint angles.
     motion_axes[0].plot(times, link1_angles_deg, label="Link 1")
@@ -1080,6 +1083,48 @@ def plot_joint_motion(times_s, link1_angles_deg, link2_angles_deg):
 
     motion_axes[1].set_ylabel("Velocity (°/s)")
     motion_axes[1].set_xlabel("Time (s)")
+
+    joint_data = [
+        (
+            "Link1",
+            link1_angles_deg,
+            link1_max_accel_deg_s2,
+            "tab:blue"
+        ),
+        (
+            "Link2",
+            link2_angles_deg,
+            link2_max_accel_deg_s2,
+            "tab:orange"
+        )
+    ]
+
+    for name, angles, limit, color in joint_data:
+        velocity = np.diff(angles) / time_steps
+
+        # Differentiate velocity using its own sample times.
+        acceleration = (
+            np.diff(velocity) / np.diff(velocity_times)
+        )
+
+        motion_axes[2].plot(
+            acceleration_times,
+                acceleration,
+                label=name,
+                color=color
+        )
+
+        # Positive and negative acceleration limits.
+    motion_axes[2].axhline(
+        limit, color=color, linestyle="--", alpha=0.5
+    )
+    motion_axes[2].axhline(
+        -limit, color=color, linestyle="--", alpha=0.5
+    )
+
+    motion_axes[2].set_title("Estimated joint acceleration")
+    motion_axes[2].set_xlabel("Time (s)")
+    motion_axes[2].set_ylabel("Acceleration (°/s²)")
 
     for axis in motion_axes:
         axis.grid(True)
@@ -1212,6 +1257,9 @@ def animate_route(route_link1, route_link2):
                 )
             else:
                 segment_start_time = perf_counter()
+
+        fig.canvas.mpl_connect("button_press_event", stop_motion)
+        fig.canvas.mpl_connect("button_press_event", preview_route)        
 
     timer.add_callback(animate_step)
     motion_timer = timer
@@ -1375,6 +1423,7 @@ def stop_motion(event):
         motion_timer.stop()
         motion_timer = None
 
+    print("Movement stop and timer reset for new target")
     ax.set_title("Movement stopped. Choose a target and plan again.")
     fig.canvas.draw_idle()
 
